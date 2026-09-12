@@ -72,8 +72,7 @@ def family(program):
     if program in range(88,96): return "pad"
     return "tone"
 
-def frames_for(notes, division, drum_mode):
-    tempo=500000
+def frames_for(notes, division, drum_mode, tempo=500000):
     if notes is None: return b"",tempo
     end=max(n.end for n in notes)
     step=max(1,round(division*tempo/1000000/50))
@@ -132,7 +131,7 @@ def compile_ay(input_path, output_path, drum_mode="off"):
     end=max(n.end for n in notes); step=max(1,round(division*tempo/1000000/50))
     total=max(1,math.ceil((end+step)/step))
     # Reuse the renderer at its stable 120 BPM default where tempo variation is not yet supported.
-    frames,_=frames_for(notes,division,drum_mode)
+    frames,_=frames_for(notes,division,drum_mode,tempo)
     Path(output_path).write_bytes(frames)
     print(f"wrote {output_path} ({len(frames)} bytes, {len(frames)//14} AY frames, drums={drum_mode})")
 
