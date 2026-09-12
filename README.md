@@ -47,3 +47,14 @@ Convert PNG or JPG artwork into a native 256x192, 6912-byte Spectrum screen:
 python3 -m pip install Pillow
 python3 spectrum_screen.py cover.png cover.scr
 ```
+
+## TAP machine-code output
+
+The machine-code path can package compressed AY register events into a self-starting TAP. It contains a BASIC loader followed by a Z80 player and the music data:
+
+```
+python3 ay_midi.py song.mid song.ay --drums noise
+python3 build_tap.py song.ay song.tap
+```
+
+The resulting TAP loads at 32768, waits on the Spectrum's 50 Hz interrupt and drives the AY directly. The event stream stores only changed AY registers, keeping longer songs practical on a 128K machine. The current player has no artwork or waveform overlay yet; those are planned as optional TAP blocks.
