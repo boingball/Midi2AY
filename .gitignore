@@ -1,0 +1,5 @@
+# Local MIDI inputs and generated song outputs
+*.mid
+*.midi
+*_ay.bas
+output/
