@@ -88,7 +88,7 @@ def float5(n):
     mant=round((n/(1<<(e-1))-1)*(1<<31))
     return bytes((e+128,))+mant.to_bytes(4,"big")
 
-TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xfa,"USR":0xc1}
+TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0}
 def basic_loader(name="POPCORN"):
     def num(n): return str(n).encode()+b"\x0e"+float5(n)
     lines=[]
