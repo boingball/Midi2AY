@@ -31,14 +31,16 @@ def player(data_address):
     mark("start")
     b+=op(0xcd)+word(BASE+0x20) # init
     mark("main"); b+=op(0x76) # HALT, 50 Hz ROM interrupt
-    b+=op(0xcd)+word(BASE+0x30)
+    # Keep the tick entry point clear of the init routine.  Init now contains
+    # EI, so it is longer than the original 0x30-byte slot.
+    b+=op(0xcd)+word(BASE+0x40)
     b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x20,"main"); b+=op(0xc9)
     while len(b)<0x20: b.append(0)
     mark("init"); b+=ld_hl(data_address)+ld_mem_hl(PTR)
     b+=op(0xaf)+ld_mem_a(PLAYING)
     b+=op(0x3e,1)+ld_mem_a(PLAYING)
     b+=op(0x21,0,0)+ld_mem_hl(WAIT)+op(0xfb,0xc9)
-    while len(b)<0x30: b.append(0)
+    while len(b)<0x40: b.append(0)
     mark("tick"); b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x28,"tick_end")
     b+=ld_hl_mem(WAIT)+op(0x7c,0xb5); jr(0x28,"process")
     b+=op(0x2b)+ld_mem_hl(WAIT)+op(0xc9)
@@ -129,3 +131,4 @@ if __name__=="__main__":
     import argparse
     p=argparse.ArgumentParser(); p.add_argument("ay"); p.add_argument("tap")
     a=p.parse_args(); build(a.ay,a.tap)
+
