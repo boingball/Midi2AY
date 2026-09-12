@@ -75,16 +75,25 @@ def player(data_address):
     return bytes(b)
 
 def compress(frames):
-    out=bytearray(); previous=bytes(14); last=-1
+    # The player consumes records as: mask, changed values, wait-to-next.
+    # Keep the wait after the values so the first record can be applied
+    # immediately after the initial interrupt.
+    events=[]; previous=bytes(14)
     for number,frame in enumerate(frames):
         if frame!=previous:
             mask=0; values=bytearray()
             for i,(before,after) in enumerate(zip(previous,frame)):
                 if before!=after:
                     mask|=1<<i; values.append(after)
-            out+=struct.pack("<HH",number-last-1,mask)+values
-            previous=frame; last=number
-    out+=b"\xff\xff"
+            events.append((number,mask,bytes(values)))
+            previous=frame
+    out=bytearray()
+    for index,(number,mask,values) in enumerate(events):
+        out+=struct.pack("<H",mask)+values
+        if index+1<len(events):
+            out+=struct.pack("<H",events[index+1][0]-number-1)
+        else:
+            out+=b"\xff\xff"
     return bytes(out)
 
 def float5(n):
