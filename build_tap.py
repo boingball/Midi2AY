@@ -95,7 +95,7 @@ def basic_loader(name="POPCORN"):
     filename=name[:10].encode("ascii")
     for no,body in ((10,bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],))),
                     (20,bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(BASE))):
-        body+=b"\r"; lines.append(struct.pack(">HH",no,len(body))+body)
+        body+=b"\r"; lines.append(struct.pack(">H",no)+struct.pack("<H",len(body))+body)
     return b"".join(lines)+b"\0"
 
 def block(payload):
