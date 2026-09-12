@@ -60,8 +60,11 @@ def player(data_address):
     b+=op(0x3a)+word(REG)+op(0x3c,0x32)+word(REG)+op(0xfe,14); jr(0x20,"reg_loop")
     b+=ld_hl_mem(PTR)
     b+=op(0x5e,0x23,0x56,0x23)+ld_mem_de(WAIT)+ld_mem_hl(PTR)
+    # The stream terminator is the two-byte value FF FF.  Both bytes must
+    # match before stopping; checking only D leaves PLAYING set forever.
     b+=op(0x7a,0xfe,0xff); jr(0x20,"tick_end")
-    b+=op(0x7b,0xfe,0xff); jr(0x20,"finish")
+    b+=op(0x7b,0xfe,0xff); jr(0x20,"tick_end")
+    jr(0x18,"finish")
     mark("tick_end"); b+=op(0xc9)
     mark("finish"); b+=op(0xaf)+ld_mem_a(PLAYING)+op(0xc9)
     for pos,name in rel:
