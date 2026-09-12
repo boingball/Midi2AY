@@ -37,7 +37,7 @@ def player(data_address):
     mark("init"); b+=ld_hl(data_address)+ld_mem_hl(PTR)
     b+=op(0xaf)+ld_mem_a(PLAYING)
     b+=op(0x3e,1)+ld_mem_a(PLAYING)
-    b+=op(0x21,0,0)+ld_mem_hl(WAIT)+op(0xc9)
+    b+=op(0x21,0,0)+ld_mem_hl(WAIT)+op(0xfb,0xc9)
     while len(b)<0x30: b.append(0)
     mark("tick"); b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x28,"tick_end")
     b+=ld_hl_mem(WAIT)+op(0x7c,0xb5); jr(0x28,"process")
