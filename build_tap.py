@@ -5,6 +5,7 @@ import struct
 
 BASE=32768
 DATA=BASE+512
+PROG=23755
 WAIT=32600
 PTR=32602
 PLAYING=32604
@@ -126,7 +127,9 @@ def tap(name,code):
     def header(kind,length,param1,param2):
         return bytes((0,kind))+name[:10].encode("ascii").ljust(10,b" ")+struct.pack("<HH",length,param1)+struct.pack("<H",param2)
     result=bytearray()
-    result+=block(header(0,len(basic),10,32768)); result+=block(b"\xff"+basic)
+    # Keep BASIC's VARS pointer immediately after the loaded program.  It
+    # must not point into the machine-code/data block at 32768.
+    result+=block(header(0,len(basic),10,PROG+len(basic))); result+=block(b"\xff"+basic)
     result+=block(header(3,len(code),BASE,len(code))); result+=block(b"\xff"+code)
     return bytes(result)
 
@@ -146,4 +149,3 @@ if __name__=="__main__":
     import argparse
     p=argparse.ArgumentParser(); p.add_argument("ay"); p.add_argument("tap")
     a=p.parse_args(); build(a.ay,a.tap)
-
