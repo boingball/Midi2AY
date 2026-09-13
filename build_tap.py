@@ -129,7 +129,8 @@ def player(data_address):
     # Keep the tick entry point clear of the init routine.  Init now contains
     # EI, so it is longer than the original 0x30-byte slot.
     b+=op(0xcd)+word(BASE+0x40)
-    b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x20,"main"); b+=op(0xc9)
+    b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x20,"main")
+    mark("stopped"); b+=op(0xf3,0x76) # stop safely; BASIC stack was replaced for bank paging
     while len(b)<0x20: b.append(0)
     mark("init"); b+=ld_hl(data_address)+ld_mem_hl(PTR)
     b+=op(0xaf)+ld_mem_a(PLAYING)
