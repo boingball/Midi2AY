@@ -293,7 +293,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.mode == "ay":
         from ay_midi import compile_ay
-        compile_ay(args.midi, args.output, args.drums)
+        compile_ay(args.midi, args.output, args.drums, args.lead_mode)
     elif args.mode == "tap":
         from ay_midi import compile_ay
         from build_tap import build
