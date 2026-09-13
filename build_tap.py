@@ -19,6 +19,19 @@ TMP=32609
 # ticks where nothing changed.
 PER_A,PER_B,PER_C,VOL_A,VOL_B,VOL_C=range(32610,32616)
 PHASE_A,PHASE_B,PHASE_C=range(32616,32619)
+# Banked TAP support for long event streams.
+BANK_STATE=32619
+BANK_RESET_OFFSET=0x1800
+BANK_NEXT_OFFSET=0x1810
+SCREEN_BACKUP_OFFSET=0x1840
+SCREEN_RESTORE_OFFSET=0x1860
+BANK_LOAD_ADDR=0xc000
+BANK_SIZE=0x4000
+BANK_MARKER=b"\xff\xfe"
+SCREEN_ADDR=0x4000
+SCREEN_LEN=6912
+# Leave ample room between BASIC's stack and the player state at 32600.
+BASIC_RAMTOP=30000
 
 def word(n): return bytes((n&255,n>>8))
 def op(*b): return bytes(b)
@@ -111,20 +124,20 @@ def player(data_address):
     # ROM's next toggle XORs the wrong base value and can scramble the RAM
     # bank bits too - silently switching away the bank our event data lives
     # in a few dozen frames in. Keep BANK_M in sync with what we write.
-    b+=op(0xf3) # DI while we repoint ROM/interrupt mode
-    b+=op(0x3a)+word(0x5b5c) # LD A,(BANK_M) - the shadow of the last port 0x7ffd write
-    b+=op(0xe6,0xef) # AND 0xef - clear only the ROM-select bit, keep the current RAM bank
-    b+=op(0x32)+word(0x5b5c) # LD (BANK_M),A - keep the ROM's shadow copy in sync
-    b+=op(0x01)+word(0x7ffd) # LD BC,0x7ffd
-    b+=op(0xed,0x79) # OUT (C),A
+    b+=op(0xf3)
+    b+=op(0x31)+word(0x7ff0) # keep the return stack in fixed RAM below C000
+    b+=op(0xaf)+ld_mem_a(BANK_STATE)
+    b+=ld_mem_a(0x5b5c)
+    b+=op(0x01)+word(0x7ffd)+op(0xed,0x79)
     b+=op(0xed,0x56) # IM 1
-    b+=op(0xcd)+word(BASE+0x20) # init
+    b+=op(0xcd)+word(BASE+0x22) # init
     mark("main"); b+=op(0x76) # HALT, 50 Hz ROM interrupt
     # Keep the tick entry point clear of the init routine.  Init now contains
     # EI, so it is longer than the original 0x30-byte slot.
     b+=op(0xcd)+word(BASE+0x40)
-    b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x20,"main"); b+=op(0xc9)
-    while len(b)<0x20: b.append(0)
+    b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x20,"main")
+    mark("stopped"); b+=op(0xf3,0x76) # stop safely; BASIC stack was replaced for bank paging
+    while len(b)<0x22: b.append(0)
     mark("init"); b+=ld_hl(data_address)+ld_mem_hl(PTR)
     b+=op(0xaf)+ld_mem_a(PLAYING)
     b+=op(0x3e,1)+ld_mem_a(PLAYING)
@@ -140,7 +153,15 @@ def player(data_address):
     b+=ld_hl_mem(WAIT)+op(0x7c,0xb5); jr(0x28,"process")
     b+=op(0x2b)+ld_mem_hl(WAIT)+op(0xc9)
     mark("process"); b+=ld_hl_mem(PTR)
-    b+=op(0x5e,0x23,0x56,0x23)+op(0xed,0x53)+word(MASK)+ld_mem_hl(PTR)
+    b+=op(0x5e,0x23,0x56,0x23)
+    # FF FE is a bank transition marker; it cannot be a valid 14-bit mask.
+    b+=op(0x7b,0xfe,0xff); jr_far(0x20,"not_bank_marker")
+    b+=op(0x7a,0xfe,0xfe); jr_far(0x20,"not_bank_marker")
+    call_label("bank_next")
+    b+=ld_hl(0xc000)+ld_mem_hl(PTR)
+    jp_label("process")
+    mark("not_bank_marker")
+    b+=op(0xed,0x53)+word(MASK)+ld_mem_hl(PTR)
     b+=op(0xaf,0x32)+word(REG)
     mark("reg_loop")
     b+=op(0xed,0x6b)+word(MASK) # HL=mask
@@ -222,6 +243,45 @@ def player(data_address):
         mark(f"ch_done_{ch}")
     b+=op(0xc9) # RET
 
+    while len(b)<BANK_RESET_OFFSET: b.append(0)
+    mark("bank_reset")
+    b+=op(0xaf)+ld_mem_a(BANK_STATE); jp_label("bank_next")
+    while len(b)<BANK_NEXT_OFFSET: b.append(0)
+    mark("bank_next")
+    b+=ld_a_mem(BANK_STATE)+op(0x3c)
+    # Banks 2 and 5 are permanently mapped at 0x8000 and 0x4000 on a 128K
+    # Spectrum. Paging either at 0xc000 aliases and overwrites the fixed
+    # player or the screen, so use the safe sequence 1, 3, 4, 6, 7.
+    b+=op(0xfe,0x02,0x20,0x01,0x3c) # CP 2; JR NZ,+1; INC A
+    b+=op(0xfe,0x05,0x20,0x01,0x3c) # CP 5; JR NZ,+1; INC A
+    b+=ld_mem_a(BANK_STATE)
+    # Preserve BANK_M bits 3-7 while replacing only RAM-bank bits 0-2.
+    # This is essential while called from 128 BASIC: clearing bit 4 would
+    # page ROM 0 over ROM 1 before RET, so BASIC resumes in the wrong ROM.
+    b+=op(0x5f)+ld_a_mem(0x5b5c)+op(0xe6,0xf8,0xb3)
+    b+=ld_mem_a(0x5b5c)+op(0x01)+word(0x7ffd)+op(0xed,0x79)+op(0xc9)
+
+    # Preserve a clean copy of the artwork in otherwise-unused RAM bank 0.
+    # Later ROM LOAD messages can then be erased instantly without storing a
+    # duplicate 6912-byte screen block on tape.
+    if len(b)>SCREEN_BACKUP_OFFSET: raise ValueError("bank routine overlaps screen backup")
+    while len(b)<SCREEN_BACKUP_OFFSET: b.append(0)
+    mark("screen_backup")
+    b+=op(0xf3,0xaf)+ld_mem_a(BANK_STATE)
+    b+=ld_a_mem(0x5b5c)+op(0xe6,0xf8)+ld_mem_a(0x5b5c)
+    b+=op(0x01)+word(0x7ffd)+op(0xed,0x79)
+    b+=ld_hl(SCREEN_ADDR)+op(0x11)+word(BANK_LOAD_ADDR)
+    b+=op(0x01)+word(SCREEN_LEN)+op(0xed,0xb0,0xfb,0xc9)
+
+    if len(b)>SCREEN_RESTORE_OFFSET: raise ValueError("screen backup overlaps restore")
+    while len(b)<SCREEN_RESTORE_OFFSET: b.append(0)
+    mark("screen_restore")
+    b+=op(0xf3,0xaf)+ld_mem_a(BANK_STATE)
+    b+=ld_a_mem(0x5b5c)+op(0xe6,0xf8)+ld_mem_a(0x5b5c)
+    b+=op(0x01)+word(0x7ffd)+op(0xed,0x79)
+    b+=ld_hl(BANK_LOAD_ADDR)+op(0x11)+word(SCREEN_ADDR)
+    b+=op(0x01)+word(SCREEN_LEN)+op(0xed,0xb0,0xfb,0xc9)
+
     mark("reg_to_slot"); b+=REG_TO_SLOT
     mark("wave_table"); b+=WAVE_TABLE
     mark("zero32"); b+=bytes(32)
@@ -258,25 +318,74 @@ def compress(frames):
             out+=b"\xff\xff"
     return bytes(out)
 
+def record_length(events, pos):
+    mask=struct.unpack_from("<H",events,pos)[0]
+    if mask & 0xc000:
+        raise ValueError("reserved event mask")
+    return 2 + mask.bit_count() + 2
+
+def split_events(events, first_capacity):
+    # Split records into a fixed-bank chunk and 16K bank chunks.
+    if not events:
+        return [b""]
+    chunks=[]
+    pos=0
+    capacity=first_capacity
+    while pos<len(events):
+        chunk=bytearray()
+        while pos<len(events):
+            length=record_length(events,pos)
+            reserve=2 if pos+length<len(events) else 0
+            if len(chunk)+length+reserve>capacity:
+                break
+            chunk.extend(events[pos:pos+length])
+            pos+=length
+        if not chunk:
+            raise ValueError("event record does not fit in bank")
+        if pos<len(events):
+            chunk.extend(BANK_MARKER)
+            chunk.extend(b"\0"*(capacity-len(chunk)))
+            chunks.append(bytes(chunk))
+            capacity=BANK_SIZE
+        else:
+            chunks.append(bytes(chunk))
+    return chunks
+
+
 def float5(n):
     if n==0: return b"\0"*5
     e=n.bit_length()
     mant=round((n/(1<<(e-1))-1)*(1<<31))
     return bytes((e+128,))+mant.to_bytes(4,"big")
 
-TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2}
-def basic_loader(name="POPCORN", has_image=False):
+TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2,"CLEAR":0xfd}
+def basic_loader(name="MUSIC", has_image=False, bank_count=0,
+                 bank_reset_address=BASE+BANK_RESET_OFFSET,
+                 bank_next_address=BASE+BANK_NEXT_OFFSET,
+                 screen_backup_address=BASE+SCREEN_BACKUP_OFFSET,
+                 screen_restore_address=BASE+SCREEN_RESTORE_OFFSET):
     def num(n): return str(n).encode()+b"\x0e"+float5(n)
     lines=[]
     filename=name[:10].encode("ascii")
     bodies=[]
-    if has_image:
-        # SCREEN$ is just CODE 16384 with the length implied; the ROM streams
-        # the picture into the display file live as it loads, then straight
-        # into the second LOAD - no keypress wait, matching how loading a
-        # real tape looks (picture builds up, then the music data loads).
-        bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
+    # Keep the BASIC stack below both C000 and the player scratch area at 32600.
+    # CLEAR 32767 left only 148 bytes and repeated LOAD/USR calls could
+    # overwrite BANK_STATE, causing the next page operation to select garbage.
+    bodies.append(bytes((TOK["CLEAR"],))+b" "+num(BASIC_RAMTOP))
+    # Load the fixed player first so its screen-copy routines are available.
     bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
+    if has_image:
+        bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
+        if bank_count:
+            bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(screen_backup_address))
+    if bank_count:
+        bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_reset_address))
+        bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
+        for _ in range(1,bank_count):
+            bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_next_address))
+            bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
+    if has_image and bank_count:
+        bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(screen_restore_address))
     bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(BASE))
     for no,body in enumerate(bodies, start=1):
         body=body+b"\r"; lines.append(struct.pack(">H",no*10)+struct.pack("<H",len(body))+body)
@@ -292,52 +401,61 @@ def block(payload):
     for byte in payload:
         checksum ^= byte
     return body+bytes((checksum,))
-SCREEN_ADDR=16384
-SCREEN_LEN=6912
-def tap(name,code,screen=None):
-    basic=basic_loader(name, has_image=screen is not None)
+def tap(name, code_chunks, screen=None):
+    name="".join(ch if 32<=ord(ch)<127 else "_" for ch in str(name).upper())[:10] or "MUSIC"
+    if not code_chunks:
+        raise ValueError("at least one code chunk is required")
+    if len(code_chunks)>6:
+        raise ValueError("128K TAP supports at most five safe bank chunks")
+    basic=basic_loader(name, has_image=screen is not None,
+                       bank_count=len(code_chunks)-1)
     def header(kind,length,param1,param2):
         return bytes((0,kind))+name[:10].encode("ascii").ljust(10,b" ")+struct.pack("<HH",length,param1)+struct.pack("<H",param2)
     result=bytearray()
-    # The Program header's second parameter is the offset from the start of
-    # the program to the start of variables, NOT an absolute address; the
-    # ROM computes VARS = PROG + param2 itself.  Passing PROG+len(basic)
-    # here made the ROM add PROG twice, corrupting VARS/E_LINE right after
-    # the loader block finished loading and crashing the tape immediately.
-    # No variables are saved, so this must equal the program's own length.
     result+=block(header(0,len(basic),10,len(basic))); result+=block(b"\xff"+basic)
+    # The fixed player must precede the artwork so the loader can call its
+    # screen-backup routine before loading the remaining bank chunks.
+    code=code_chunks[0]
+    if len(code)>0x10000-BASE: raise ValueError("fixed code chunk is too large")
+    result+=block(header(3,len(code),BASE,len(code))); result+=block(b"\xff"+code)
     if screen is not None:
         if len(screen)!=SCREEN_LEN: raise ValueError(f"screen must be {SCREEN_LEN} bytes")
         result+=block(header(3,len(screen),SCREEN_ADDR,len(screen))); result+=block(b"\xff"+screen)
-    result+=block(header(3,len(code),BASE,len(code))); result+=block(b"\xff"+code)
+    for code in code_chunks[1:]:
+        if len(code)>BANK_SIZE: raise ValueError("bank code chunk is too large")
+        result+=block(header(3,len(code),BANK_LOAD_ADDR,len(code))); result+=block(b"\xff"+code)
     return bytes(result)
 
-def build(ay_path,out_path,name="POPCORN",image_path=None):
+def build(ay_path,out_path,name=None,image_path=None):
+    name=name or Path(out_path).stem
     raw=Path(ay_path).read_bytes()
     frames=[raw[i:i+14] for i in range(0,len(raw)-1,14) if len(raw[i:i+14])==14]
     events=compress(frames)
-    # player()'s length doesn't depend on the data address embedded in it
-    # (any 16-bit immediate is 2 bytes either way), so size it once with a
-    # placeholder address, then round up to place the actual data area.
     player_len=len(player(0))
     data_address=BASE+((player_len+0xff)//0x100)*0x100
-    code=bytearray(player(data_address))
-    code.extend(b"\0"*(data_address-(BASE+len(code))))
-    code.extend(events)
-    # Ensure the event stream and player remain below the 128K linear space.
-    if len(code)>65536-BASE: raise ValueError("music does not fit in 48K above BASIC")
+    chunks=split_events(events, BANK_LOAD_ADDR-data_address)
+    code0=bytearray(player(data_address))
+    code0.extend(b"\0"*(data_address-(BASE+len(code0))))
+    code0.extend(chunks[0])
+    if len(chunks)>1 and len(code0)!=BANK_LOAD_ADDR-BASE:
+        raise ValueError("first bank chunk was not padded to C000")
+    if len(chunks)>6:
+        raise ValueError("music needs more than the five safe extra RAM banks")
+    code_chunks=[bytes(code0)]+chunks[1:]
     screen=None
     if image_path is not None:
         import spectrum_screen, tempfile
         with tempfile.NamedTemporaryFile(suffix=".scr") as tmp:
             spectrum_screen.convert(image_path, tmp.name)
             screen=Path(tmp.name).read_bytes()
-    Path(out_path).write_bytes(tap(name,bytes(code),screen))
-    print(f"wrote {out_path}: {len(code)} bytes machine code/data, {len(events)} bytes events"
+    Path(out_path).write_bytes(tap(name,code_chunks,screen))
+    print(f"wrote {out_path}: {len(code0)} byte fixed code/data, {len(events)} byte events, {len(code_chunks)-1} bank chunks"
           +(f", {len(screen)} byte screen" if screen else ""))
+
 
 if __name__=="__main__":
     import argparse
     p=argparse.ArgumentParser(); p.add_argument("ay"); p.add_argument("tap")
+    p.add_argument("--name", help="Spectrum tape name (defaults to output filename)")
     p.add_argument("--image", help="PNG/JPG artwork to show before playback")
-    a=p.parse_args(); build(a.ay,a.tap,image_path=a.image)
+    a=p.parse_args(); build(a.ay,a.tap,name=a.name,image_path=a.image)
