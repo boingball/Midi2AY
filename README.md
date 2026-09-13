@@ -206,3 +206,6 @@ The player relocates its stack into fixed RAM before paging and stops safely aft
 ```
 python3 midi2ay.py "No Surprises.mid" no_surprises.tap --mode tap --drums hybrid --lead-mode smart --image cover.jpg
 ```
+
+
+The TAP loader starts with `CLEAR 32767` so Sinclair BASIC keeps its stack below the banked C000 window while the additional music banks are loaded. The player also uses a fixed-RAM stack while switching banks during playback and stops safely at the end.
