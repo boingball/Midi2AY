@@ -195,3 +195,14 @@ Example:
 ```
 python3 midi2ay.py song.mid song.tap --mode tap --lead-mode smart --drums hybrid
 ```
+
+
+## PR6 bank-switched TAP storage
+
+Long TAP songs automatically split their compressed AY event stream across the fixed area and 16K RAM banks 1-7 of a 128K Spectrum. The BASIC loader pages each bank before loading it; the machine-code player follows transition markers during playback. This keeps `--drums noise` and `--drums hybrid` available for larger songs instead of silently dropping percussion.
+
+The player relocates its stack into fixed RAM before paging and stops safely after the final event. Example:
+
+```
+python3 midi2ay.py "No Surprises.mid" no_surprises.tap --mode tap --drums hybrid --lead-mode smart --image cover.jpg
+```
