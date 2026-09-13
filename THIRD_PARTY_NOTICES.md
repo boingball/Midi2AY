@@ -2,7 +2,7 @@
 
 ## lib-spectrum
 
-Midi2AY's PR7 keyboard-row scanning and frame-based colour-table effects adapt ideas and small routines from [lib-spectrum](https://github.com/breakintoprogram/lib-spectrum) by Dean Belfield.
+Midi2AY's PR7 keyboard-row scanning and frame-based colour-table effects adapt ideas and small routines from [lib-spectrum](https://github.com/breakintoprogram/lib-spectrum) by Dean Belfield. Its artwork-safe demo mode is also inspired by lib-spectrum's sprite and filled-vector 3D demonstrations, while using a separately implemented renderer.
 
 The original lib-spectrum colour-bars demo uses a cycle-timed IM2 raster routine. Midi2AY uses a separately implemented 50 Hz version so AY playback remains uninterrupted.
 
