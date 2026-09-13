@@ -23,9 +23,13 @@ PHASE_A,PHASE_B,PHASE_C=range(32616,32619)
 BANK_STATE=32619
 BANK_RESET_OFFSET=0x1800
 BANK_NEXT_OFFSET=0x1810
+SCREEN_BACKUP_OFFSET=0x1840
+SCREEN_RESTORE_OFFSET=0x1860
 BANK_LOAD_ADDR=0xc000
 BANK_SIZE=0x4000
 BANK_MARKER=b"\xff\xfe"
+SCREEN_ADDR=0x4000
+SCREEN_LEN=6912
 # Leave ample room between BASIC's stack and the player state at 32600.
 BASIC_RAMTOP=30000
 
@@ -257,6 +261,27 @@ def player(data_address):
     b+=op(0x5f)+ld_a_mem(0x5b5c)+op(0xe6,0xf8,0xb3)
     b+=ld_mem_a(0x5b5c)+op(0x01)+word(0x7ffd)+op(0xed,0x79)+op(0xc9)
 
+    # Preserve a clean copy of the artwork in otherwise-unused RAM bank 0.
+    # Later ROM LOAD messages can then be erased instantly without storing a
+    # duplicate 6912-byte screen block on tape.
+    if len(b)>SCREEN_BACKUP_OFFSET: raise ValueError("bank routine overlaps screen backup")
+    while len(b)<SCREEN_BACKUP_OFFSET: b.append(0)
+    mark("screen_backup")
+    b+=op(0xf3,0xaf)+ld_mem_a(BANK_STATE)
+    b+=ld_a_mem(0x5b5c)+op(0xe6,0xf8)+ld_mem_a(0x5b5c)
+    b+=op(0x01)+word(0x7ffd)+op(0xed,0x79)
+    b+=ld_hl(SCREEN_ADDR)+op(0x11)+word(BANK_LOAD_ADDR)
+    b+=op(0x01)+word(SCREEN_LEN)+op(0xed,0xb0,0xfb,0xc9)
+
+    if len(b)>SCREEN_RESTORE_OFFSET: raise ValueError("screen backup overlaps restore")
+    while len(b)<SCREEN_RESTORE_OFFSET: b.append(0)
+    mark("screen_restore")
+    b+=op(0xf3,0xaf)+ld_mem_a(BANK_STATE)
+    b+=ld_a_mem(0x5b5c)+op(0xe6,0xf8)+ld_mem_a(0x5b5c)
+    b+=op(0x01)+word(0x7ffd)+op(0xed,0x79)
+    b+=ld_hl(BANK_LOAD_ADDR)+op(0x11)+word(SCREEN_ADDR)
+    b+=op(0x01)+word(SCREEN_LEN)+op(0xed,0xb0,0xfb,0xc9)
+
     mark("reg_to_slot"); b+=REG_TO_SLOT
     mark("wave_table"); b+=WAVE_TABLE
     mark("zero32"); b+=bytes(32)
@@ -336,7 +361,9 @@ def float5(n):
 TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2,"CLEAR":0xfd}
 def basic_loader(name="MUSIC", has_image=False, bank_count=0,
                  bank_reset_address=BASE+BANK_RESET_OFFSET,
-                 bank_next_address=BASE+BANK_NEXT_OFFSET):
+                 bank_next_address=BASE+BANK_NEXT_OFFSET,
+                 screen_backup_address=BASE+SCREEN_BACKUP_OFFSET,
+                 screen_restore_address=BASE+SCREEN_RESTORE_OFFSET):
     def num(n): return str(n).encode()+b"\x0e"+float5(n)
     lines=[]
     filename=name[:10].encode("ascii")
@@ -345,24 +372,20 @@ def basic_loader(name="MUSIC", has_image=False, bank_count=0,
     # CLEAR 32767 left only 148 bytes and repeated LOAD/USR calls could
     # overwrite BANK_STATE, causing the next page operation to select garbage.
     bodies.append(bytes((TOK["CLEAR"],))+b" "+num(BASIC_RAMTOP))
-    if has_image:
-        # SCREEN$ is just CODE 16384 with the length implied; the ROM streams
-        # the picture into the display file live as it loads, then straight
-        # into the second LOAD - no keypress wait, matching how loading a
-        # real tape looks (picture builds up, then the music data loads).
-        bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
+    # Load the fixed player first so its screen-copy routines are available.
     bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
+    if has_image:
+        bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
+        if bank_count:
+            bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(screen_backup_address))
     if bank_count:
         bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_reset_address))
         bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
         for _ in range(1,bank_count):
             bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_next_address))
             bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
-    # ROM loading messages are drawn over an already-loaded picture. Load the
-    # same screen once more after all code blocks so its own data erases the
-    # final "Bytes:" message before playback begins.
-    if has_image:
-        bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
+    if has_image and bank_count:
+        bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(screen_restore_address))
     bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(BASE))
     for no,body in enumerate(bodies, start=1):
         body=body+b"\r"; lines.append(struct.pack(">H",no*10)+struct.pack("<H",len(body))+body)
@@ -378,8 +401,6 @@ def block(payload):
     for byte in payload:
         checksum ^= byte
     return body+bytes((checksum,))
-SCREEN_ADDR=16384
-SCREEN_LEN=6912
 def tap(name, code_chunks, screen=None):
     name="".join(ch if 32<=ord(ch)<127 else "_" for ch in str(name).upper())[:10] or "MUSIC"
     if not code_chunks:
@@ -392,18 +413,17 @@ def tap(name, code_chunks, screen=None):
         return bytes((0,kind))+name[:10].encode("ascii").ljust(10,b" ")+struct.pack("<HH",length,param1)+struct.pack("<H",param2)
     result=bytearray()
     result+=block(header(0,len(basic),10,len(basic))); result+=block(b"\xff"+basic)
+    # The fixed player must precede the artwork so the loader can call its
+    # screen-backup routine before loading the remaining bank chunks.
+    code=code_chunks[0]
+    if len(code)>0x10000-BASE: raise ValueError("fixed code chunk is too large")
+    result+=block(header(3,len(code),BASE,len(code))); result+=block(b"\xff"+code)
     if screen is not None:
         if len(screen)!=SCREEN_LEN: raise ValueError(f"screen must be {SCREEN_LEN} bytes")
         result+=block(header(3,len(screen),SCREEN_ADDR,len(screen))); result+=block(b"\xff"+screen)
-    for index,code in enumerate(code_chunks):
-        address=BASE if index==0 else BANK_LOAD_ADDR
-        limit=0x10000-BASE if index==0 else BANK_SIZE
-        if len(code)>limit: raise ValueError("code chunk is too large")
-        result+=block(header(3,len(code),address,len(code))); result+=block(b"\xff"+code)
-    # Match the final SCREEN$ in the loader. This costs 6912 bytes on tape but
-    # leaves pristine artwork instead of ROM status text when playback starts.
-    if screen is not None:
-        result+=block(header(3,len(screen),SCREEN_ADDR,len(screen))); result+=block(b"\xff"+screen)
+    for code in code_chunks[1:]:
+        if len(code)>BANK_SIZE: raise ValueError("bank code chunk is too large")
+        result+=block(header(3,len(code),BANK_LOAD_ADDR,len(code))); result+=block(b"\xff"+code)
     return bytes(result)
 
 def build(ay_path,out_path,name=None,image_path=None):
