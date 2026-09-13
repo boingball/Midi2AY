@@ -100,11 +100,47 @@ FULL32=bytes((0xff,))*32
 REG_TO_SLOT=bytes((0,0xff,1,0xff,2,0xff,0xff,0xff,3,4,5,0xff,0xff,0xff))
 VISUAL_IDS={"scope":1,"bars":2,"pulse":3,"colour":4,"demo":5}
 
+# Small self-contained 5x7 font for mode 5.  The 128K machine has two ROMs,
+# and the player deliberately selects the ROM whose 0x3c00 area is not the
+# 48K character set.  Embedding only the glyphs used by the title is both
+# safer than paging ROMs mid-song and smaller than carrying a full font.
+FONT_5X7={
+    " ":(0,0,0,0,0,0,0), "!":(4,4,4,4,4,0,4),
+    "'":(4,4,0,0,0,0,0), "(":(2,4,8,8,8,4,2),
+    ")":(8,4,2,2,2,4,8), "+":(0,4,4,31,4,4,0),
+    ",":(0,0,0,0,0,4,8), "-":(0,0,0,31,0,0,0),
+    ".":(0,0,0,0,0,0,4), "/":(1,2,2,4,8,8,16),
+    "0":(14,17,19,21,25,17,14), "1":(4,12,4,4,4,4,14),
+    "2":(14,17,1,2,4,8,31), "3":(30,1,1,14,1,1,30),
+    "4":(2,6,10,18,31,2,2), "5":(31,16,16,30,1,1,30),
+    "6":(14,16,16,30,17,17,14), "7":(31,1,2,4,8,8,8),
+    "8":(14,17,17,14,17,17,14), "9":(14,17,17,15,1,1,14),
+    ":":(0,4,0,0,0,4,0), "?":(14,17,1,2,4,0,4),
+    "A":(14,17,17,31,17,17,17), "B":(30,17,17,30,17,17,30),
+    "C":(14,17,16,16,16,17,14), "D":(30,17,17,17,17,17,30),
+    "E":(31,16,16,30,16,16,31), "F":(31,16,16,30,16,16,16),
+    "G":(14,17,16,23,17,17,15), "H":(17,17,17,31,17,17,17),
+    "I":(14,4,4,4,4,4,14), "J":(7,2,2,2,18,18,12),
+    "K":(17,18,20,24,20,18,17), "L":(16,16,16,16,16,16,31),
+    "M":(17,27,21,21,17,17,17), "N":(17,25,21,19,17,17,17),
+    "O":(14,17,17,17,17,17,14), "P":(30,17,17,30,16,16,16),
+    "Q":(14,17,17,17,21,18,13), "R":(30,17,17,30,20,18,17),
+    "S":(15,16,16,14,1,1,30), "T":(31,4,4,4,4,4,4),
+    "U":(17,17,17,17,17,17,14), "V":(17,17,17,17,17,10,4),
+    "W":(17,17,17,21,21,21,10), "X":(17,17,10,4,10,17,17),
+    "Y":(17,17,10,4,4,4,4), "Z":(31,1,2,4,8,16,31),
+    "_":(0,0,0,0,0,0,31),
+}
+
+def title_glyph(ch):
+    return bytes((0,*(row<<1 for row in FONT_5X7.get(ch,FONT_5X7["?"]))))
+
 def player(data_address, initial_visual=1, title="MUSIC"):
     if initial_visual not in VISUAL_IDS.values():
         raise ValueError("initial visual mode must be 1-5")
     title="".join(ch if 32<=ord(ch)<127 else "_" for ch in str(title).upper())[:30] or "MUSIC"
     title_x=(32-len(title))//2
+    title_glyph_data=b"".join(title_glyph(ch) for ch in title)
     b=bytearray()
     labels={}
     rel=[]
@@ -392,11 +428,9 @@ def player(data_address, initial_visual=1, title="MUSIC"):
         b+=op(0x11)+word(screen_addr(line))+op(0x01)+word(32)+op(0xed,0xb0)
     b+=ld_hl(0x5800)+op(0x3e,0x47,0x77)+op(0x11)+word(0x5801)
     b+=op(0x01)+word(31)+op(0xed,0xb0)
-    # ROM-font title, centred and capped at 30 characters.
-    for x,ch in enumerate(title,title_x):
-        # The Spectrum ROM's character table is addressed as 0x3c00+A*8;
-        # printable space therefore begins at 0x3d00, not at 0x3c00.
-        b+=op(0x11)+word(0x3c00+ord(ch)*8)
+    # Embedded-font title, centred and capped at 30 characters.
+    for index,x in enumerate(range(title_x,title_x+len(title))):
+        ld_de_label("title_glyphs",index*8)
         b+=ld_hl(screen_addr(0,x))+op(0x06,8)
         mark(f"title_char_{x}")
         b+=op(0x1a,0x77,0x13,0x24); jr(0x10,f"title_char_{x}")
@@ -458,15 +492,6 @@ def player(data_address, initial_visual=1, title="MUSIC"):
         mark(f"ball_xor_loop_{half}")
         b+=op(0x1a,0xae,0x77,0x13,0x23,0x1a,0xae,0x77,0x13,0x2b,0x24)
         jr(0x10,f"ball_xor_loop_{half}")
-    # Toggle BRIGHT and the three PAPER bits in the corresponding 2x2
-    # attribute cells. The colour block makes the bubbles readable over busy
-    # cover art, and XOR means the original attributes still restore exactly.
-    b+=op(0xdd,0x7e,1,0x87,0x26,0,0x6f,0xe5)
-    ld_hl_label("ball_attr_table"); b+=op(0xd1,0x19,0x5e,0x23,0x56,0xeb)
-    b+=op(0xdd,0x7e,0,0x85,0x6f,0x06,2)
-    mark("ball_attr_loop")
-    b+=op(0x7e,0xee,0x78,0x77,0x23,0x7e,0xee,0x78,0x77)
-    b+=op(0x11)+word(31)+op(0x19); jr(0x10,"ball_attr_loop")
     b+=op(0xc9)
 
     while len(b)<BANK_RESET_OFFSET: b.append(0)
@@ -515,15 +540,14 @@ def player(data_address, initial_visual=1, title="MUSIC"):
     mark("zero32"); b+=bytes(32)
     mark("ball_row_table")
     for row in range(20): b+=word(screen_addr(row*8))
-    mark("ball_attr_table")
-    for row in range(20): b+=word(0x5800+row*32)
     mark("ball_sprite")
     b+=bytes((
-        0x07,0xe0, 0x1f,0xf8, 0x3f,0xfc, 0x7f,0xfe,
-        0x7c,0x7e, 0xf8,0x3f, 0xf8,0x3f, 0xfc,0x7f,
-        0xfc,0x7f, 0xfe,0xff, 0x7f,0xfe, 0x7f,0xfe,
-        0x3f,0xfc, 0x1f,0xf8, 0x07,0xe0, 0x00,0x00,
+        0x03,0xc0, 0x0f,0xf0, 0x1f,0xf8, 0x3f,0xfc,
+        0x7f,0xfe, 0x7f,0xfe, 0xff,0xff, 0xff,0xff,
+        0xff,0xff, 0xff,0xff, 0x7f,0xfe, 0x7f,0xfe,
+        0x3f,0xfc, 0x1f,0xf8, 0x0f,0xf0, 0x03,0xc0,
     ))
+    mark("title_glyphs"); b+=title_glyph_data
     mark("title_backup"); b+=bytes(8*32)
     mark("title_attr_backup"); b+=bytes(32)
 
