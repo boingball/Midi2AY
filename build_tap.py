@@ -121,10 +121,11 @@ def basic_loader(name="POPCORN"):
     for no,body in ((10,bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],))),
                     (20,bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(BASE))):
         body+=b"\r"; lines.append(struct.pack(">H",no)+struct.pack("<H",len(body))+body)
-    # The BASIC program terminator is a zero line number: two zero bytes.
-    # Leaving out the second byte makes the interpreter read into the next
-    # byte of memory and can produce C Nonsense in BASIC at the last line.
-    return b"".join(lines)+b"\0\0"
+    # The ROM finds the end of a BASIC program via the VARS system variable,
+    # not an in-band sentinel. An appended zero line number is not a real
+    # line: the interpreter tries to parse it as one once it steps past the
+    # last real line, which is what produced "Nonsense in BASIC, 0:1".
+    return b"".join(lines)
 
 def block(payload):
     body=struct.pack("<H",len(payload)+1)+payload
