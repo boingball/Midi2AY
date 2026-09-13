@@ -100,7 +100,13 @@ def patch_volume(note, frame_start, frame_end):
         level = 0.30 + 0.70 * age / max(1, attack)
     if remaining < release:
         level = min(level, sustain * remaining / max(1, release))
-    return max(1, min(15, round(note.velocity * 15 / 127 * level)))
+    volume = max(1, min(15, round(note.velocity * 15 / 127 * level)))
+    # One-step volume changes on a 50 Hz AY stream cost another event record
+    # but are barely audible. Quantising the envelope keeps long songs inside
+    # the 128K TAP memory budget while retaining eight useful levels.
+    if volume > 1:
+        volume = min(15, ((volume + 1) // 2) * 2)
+    return volume
 
 def drum_profile(pitch):
     """Return noise period, optional hybrid tone pitch, and decay style."""
@@ -126,7 +132,10 @@ def drum_volume(note, frame_start, frame_end, style):
     level = max(0.18, 1.0 - age / max(1, decay))
     if remaining <= 0:
         level *= 0.35
-    return max(1, min(15, round(note.velocity * 15 / 127 * level)))
+    volume = max(1, min(15, round(note.velocity * 15 / 127 * level)))
+    if volume > 1:
+        volume = min(15, ((volume + 1) // 2) * 2)
+    return volume
 
 def _choose_voices(tones, lead_mode="smart", previous_lead=None, previous_middle=None):
     """Route a polyphonic tone set to AY accompaniment, lead and bass.
