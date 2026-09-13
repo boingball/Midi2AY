@@ -61,7 +61,16 @@ def convert(src, dst):
                     p = pixels[cell_x*8+col,cell_y*8+row]
                     if dist2(p,ink_rgb) < dist2(p,paper_rgb):
                         bits |= 0x80 >> col
-                screen_row = ((cell_y & 7) << 3) | ((cell_y & 24) << 2) | row
+                # The Spectrum's display file interleaves pixel rows in
+                # thirds-of-the-screen, not top-to-bottom: row R of character
+                # row cell_y lives at ((cell_y//8)*64 + row*8 + cell_y%8) row
+                # -slots of 32 bytes, not ((cell_y%8)*8 + (cell_y//8*32) + row)
+                # as this previously computed. The old formula collided
+                # unrelated character rows onto the same bytes (e.g. cell_y=4
+                # row=0 and cell_y=8 row=0 both landed on slot 32), silently
+                # overwriting each other - invisible on a smooth gradient but
+                # glaring on detailed content like text.
+                screen_row = ((cell_y >> 3) << 6) | (row << 3) | (cell_y & 7)
                 bitmap[screen_row*32+cell_x] = bits
     Path(dst).write_bytes(bitmap+attrs)
     print(f"wrote {dst} (6912 bytes)")
