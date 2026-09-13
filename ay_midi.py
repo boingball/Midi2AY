@@ -207,32 +207,72 @@ def patch_period(note, frame_start, frame_end, frame_ticks=1, instrument_mode="a
 
 def drum_profile(pitch):
     """Return noise period, optional hybrid tone pitch, and decay style."""
-    if pitch in (35, 36): return 24, max(24, pitch - 12), "kick"
-    if pitch in (38, 40): return 10, None, "snare"
-    if pitch in (42, 44): return 5, None, "closed_hat"
-    if pitch == 46: return 3, None, "open_hat"
-    if pitch in (41, 43, 45, 47, 48, 50): return 16, max(28, pitch - 12), "tom"
-    if pitch in (49, 52, 55, 57): return 2, None, "crash"
-    if pitch in (51, 53, 59): return 4, None, "ride"
-    return max(1, min(31, 31 - round((pitch - 35) * 0.45))), None, "percussion"
+    if pitch in (35,36): return 27,max(24,pitch-12),"kick"
+    if pitch == 37: return 8,None,"stick"
+    if pitch in (38,40): return 10,None,"snare"
+    if pitch == 39: return 7,None,"clap"
+    if pitch in (42,44): return 4,None,"closed_hat"
+    if pitch == 46: return 2,None,"open_hat"
+    if pitch in (41,43,45,47,48,50): return 17,max(28,pitch-12),"tom"
+    if pitch in (49,52,55,57): return 1,None,"crash"
+    if pitch in (51,59): return 3,None,"ride"
+    if pitch == 53: return 5,65,"ride_bell"
+    if pitch == 54: return 3,None,"tambourine"
+    if pitch == 56: return 9,56,"cowbell"
+    if pitch == 58: return 12,None,"vibraslap"
+    if pitch in range(60,69): return 12,max(36,pitch-18),"hand_drum"
+    if pitch in (69,70): return 2,None,"shaker"
+    if pitch in (71,72): return 6,max(60,pitch),"whistle"
+    if pitch in (73,74): return 8,None,"guiro"
+    if pitch in (75,76,77): return 14,max(44,pitch-24),"wood"
+    if pitch in (78,79): return 10,max(40,pitch-24),"cuica"
+    if pitch in (80,81): return 2,72,"triangle"
+    # Unknown high percussion should be bright, not the low rumble produced
+    # by the old inverse-pitch fallback (notably GM 54 tambourine in Popcorn).
+    return (6 if pitch>=50 else 18),None,"percussion"
 
-def drum_volume(note, frame_start, frame_end, style):
-    duration = max(1, note.end - note.start)
-    age = max(0, frame_start - note.start)
-    remaining = max(0, note.end - frame_end)
-    if style in ("closed_hat", "snare", "kick"):
-        decay = min(duration, 45)
-    elif style in ("crash", "ride", "open_hat"):
-        decay = min(duration, 180)
-    else:
-        decay = min(duration, 90)
-    level = max(0.18, 1.0 - age / max(1, decay))
-    if remaining <= 0:
-        level *= 0.35
+
+DRUM_DECAY_FRAMES={
+    "kick":4,"stick":2,"snare":5,"clap":6,"closed_hat":2,"open_hat":9,
+    "tom":6,"crash":20,"ride":16,"ride_bell":8,"tambourine":3,
+    "cowbell":8,"vibraslap":12,"hand_drum":5,"shaker":3,"whistle":12,
+    "guiro":8,"wood":4,"cuica":7,"triangle":14,"percussion":5,
+}
+
+NOISE_PRIORITY={
+    "snare":100,"clap":96,"stick":92,"tambourine":88,"shaker":86,
+    "closed_hat":82,"open_hat":80,"crash":76,"ride":72,"ride_bell":70,
+    "triangle":68,"vibraslap":64,"guiro":60,"cuica":58,"cowbell":55,
+    "whistle":50,"kick":45,"tom":40,"hand_drum":38,"wood":35,
+    "percussion":30,
+}
+
+TONE_PRIORITY={
+    "kick":100,"tom":90,"hand_drum":82,"cowbell":78,"wood":74,
+    "cuica":70,"ride_bell":66,"triangle":64,"whistle":60,
+}
+
+
+def drum_volume(note, frame_start, frame_end, frame_ticks, style):
+    age,_,duration=note_frame_position(note,frame_start,frame_end,frame_ticks)
+    decay=min(duration,DRUM_DECAY_FRAMES.get(style,5))
+    level=max(0.18,1.0-age/max(1,decay))
     volume = max(1, min(15, round(note.velocity * 15 / 127 * level)))
     if volume > 1:
         volume = min(15, ((volume + 1) // 2) * 2)
     return volume
+
+
+def drum_tone_period(note, frame_start, frame_end, frame_ticks, tone_pitch, style):
+    """Give kicks and toms the short downward sweep that makes them punch."""
+    age,_,_=note_frame_position(note,frame_start,frame_end,frame_ticks)
+    if style=="kick":
+        tone_pitch+=max(0,3-age)*5
+    elif style in ("tom","hand_drum"):
+        tone_pitch+=max(0,2-age)*2
+    elif style=="cuica":
+        tone_pitch+=min(5,age)*2
+    return period(tone_pitch)
 
 def _choose_voices(tones, lead_mode="smart", previous_lead=None, previous_middle=None):
     """Route a polyphonic tone set to AY accompaniment, lead and bass.
@@ -346,18 +386,24 @@ def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart",
         if patch_noise:
             regs[6]=min(patch_noise)
         if drums:
-            # AY has one shared noise generator. Choose the loudest hit for
-            # this frame, then map its MIDI percussion note to a recognisable
-            # kick, snare, hat, tom, crash or ride character.
-            d=max(drums, key=lambda n: n.velocity)
-            noise_period, tone_pitch, style = drum_profile(d.pitch)
+            # The AY has one shared noise generator but hybrid mode may combine
+            # the most useful noise hit with a different pitched hit. Thus a
+            # simultaneous tambourine no longer hides Popcorn's bass drum:
+            # channel C carries bright tambourine noise plus the kick sweep.
+            described=[(n,*drum_profile(n.pitch)) for n in drums]
+            noise_hit=max(described,key=lambda item:(NOISE_PRIORITY.get(item[3],0),item[0].velocity))
+            noise_note,noise_period,_,noise_style=noise_hit
             regs[6]=noise_period
-            regs[10]=max(regs[10], drum_volume(d, a, b, style))
+            regs[10]=max(regs[10],drum_volume(noise_note,a,b,step,noise_style))
             mixer &= ~(1<<5)  # noise on channel C
-            if drum_mode=="hybrid" and tone_pitch is not None:
-                per=period(tone_pitch)
+            tonal=[item for item in described if item[2] is not None]
+            if drum_mode=="hybrid" and tonal:
+                tone_note,_,tone_pitch,tone_style=max(
+                    tonal,key=lambda item:(TONE_PRIORITY.get(item[3],0),item[0].velocity))
+                per=drum_tone_period(tone_note,a,b,step,tone_pitch,tone_style)
                 regs[4]=per&255; regs[5]=(per>>8)&15
-                regs[10]=max(regs[10], min(15, drum_volume(d, a, b, style)+2))
+                tone_volume=drum_volume(tone_note,a,b,step,tone_style)
+                regs[10]=max(regs[10],min(15,tone_volume+2))
                 mixer &= ~(1<<2)  # tone on channel C
 
         regs[7]=mixer

@@ -159,6 +159,11 @@ python3 midi2ay.py song.mid song.tap --mode tap --instruments auto --drums hybri
 python3 midi2ay.py song.mid song.tap --mode tap --instruments plain --drums hybrid
 ```
 
+When `--image` is omitted, TAP mode now generates a deterministic native
+Spectrum title screen from the MIDI filename. It includes the song title,
+starfield, three AY wave traces and a coloured equaliser motif without needing
+Pillow. Pass `--no-artwork` to retain the old screenless TAP behaviour.
+
 The automatic mapper covers all 128 General MIDI programs:
 
 | General MIDI programs | AY family | Treatment |
@@ -186,6 +191,12 @@ tempos and PPQN resolutions. Software envelopes keep all three AY voices
 independent and never silence a cell while a source MIDI note remains active.
 When channel-10 drums are present they take ownership of the chip's one shared
 noise generator, preventing an effects patch from changing the drum sound.
+
+The percussion mapper covers the General MIDI drum range rather than falling
+back to inverse-pitch noise. Hybrid mode can choose one noise hit and one tonal
+hit from simultaneous drums: for example, bright tambourine noise can play
+with a separate descending kick sweep on channel C. This fixes MIDI note 54
+tambourine being rendered as a low rumble and hiding Popcorn's kick.
 
 These are deliberately AY interpretations, not sampled General MIDI sounds:
 the hardware still supplies three square-wave tone channels, one shared noise

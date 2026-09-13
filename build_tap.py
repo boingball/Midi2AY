@@ -2,6 +2,7 @@
 """Build a self-starting ZX Spectrum TAP from AY register frames."""
 from pathlib import Path
 import struct
+import math
 
 BASE=32768
 WAIT=32600
@@ -134,6 +135,101 @@ FONT_5X7={
 
 def title_glyph(ch):
     return bytes((0,*(row<<1 for row in FONT_5X7.get(ch,FONT_5X7["?"]))))
+
+
+def default_screen(title="MUSIC"):
+    """Generate a dependency-free 6912-byte Spectrum title screen.
+
+    TAP output should still look intentional when no JPEG/PNG is supplied.
+    The design is deterministic for a title and leaves the bottom visual strip
+    available for the live effects.
+    """
+    bitmap=bytearray(6144)
+    attrs=bytearray((0x45,))*768 # bright cyan ink on black paper
+
+    def pixel(x,y):
+        if 0<=x<256 and 0<=y<192:
+            offset=screen_addr(y,x//8)-SCREEN_ADDR
+            bitmap[offset]|=0x80>>(x&7)
+
+    def line(x0,y0,x1,y1):
+        dx=abs(x1-x0); sx=1 if x0<x1 else -1
+        dy=-abs(y1-y0); sy=1 if y0<y1 else -1
+        error=dx+dy
+        while True:
+            pixel(x0,y0)
+            if x0==x1 and y0==y1: break
+            twice=2*error
+            if twice>=dy: error+=dy; x0+=sx
+            if twice<=dx: error+=dx; y0+=sy
+
+    def text(value,y,scale=1):
+        value="".join(ch if ch in FONT_5X7 else "?" for ch in value.upper())
+        width=max(0,(len(value)*6-1)*scale)
+        x=max(0,(256-width)//2)
+        for ch in value:
+            glyph=FONT_5X7.get(ch,FONT_5X7["?"])
+            for gy,row in enumerate(glyph):
+                for gx in range(5):
+                    if row&(1<<(4-gx)):
+                        for yy in range(scale):
+                            for xx in range(scale): pixel(x+gx*scale+xx,y+gy*scale+yy)
+            x+=6*scale
+
+    def title_lines(value):
+        words=" ".join(str(value).upper().replace("_"," ").split()).split(" ")
+        lines=[]; current=""
+        for word in words:
+            candidate=(current+" "+word).strip()
+            if current and len(candidate)>20:
+                lines.append(current); current=word
+            else: current=candidate
+        if current: lines.append(current)
+        return lines[:2] or ["MUSIC"]
+
+    # Deterministic star field based on the title; no random module or image
+    # dependency is needed to produce the same TAP twice.
+    seed=sum((index+1)*ord(ch) for index,ch in enumerate(str(title)))|1
+    for _ in range(90):
+        seed=(1103515245*seed+12345)&0x7fffffff
+        x=8+(seed&0xff)%240
+        seed=(1103515245*seed+12345)&0x7fffffff
+        y=42+(seed&0xff)%92
+        pixel(x,y)
+
+    # Framed logo and song title.
+    line(46,6,209,6); line(46,34,209,34)
+    line(46,6,46,34); line(209,6,209,34)
+    text("MIDI2AY",10,3)
+    lines=title_lines(title)
+    start_y=64 if len(lines)==2 else 76
+    for index,value in enumerate(lines):
+        scale=2 if len(value)<=20 else 1
+        text(value,start_y+index*22,scale)
+
+    # Three AY channel waves, followed by a small rainbow/equaliser footer.
+    for channel,(centre,amplitude,phase) in enumerate(((126,5,0),(138,4,2),(150,3,4))):
+        previous=None
+        for x in range(8,248,2):
+            y=centre+round(math.sin((x+phase*9)/13.0)*amplitude)
+            if previous is not None: line(previous[0],previous[1],x,y)
+            previous=(x,y)
+        attr=0x42+channel # red, magenta, green-ish successive AY bands
+        for row in range(centre//8,(centre+7)//8+1):
+            attrs[row*32:(row+1)*32]=bytes((attr,))*32
+
+    colours=(0x42,0x46,0x44,0x45)
+    for column in range(32):
+        height=2+((column*7+seed)%5)
+        for row in range(20-height,20):
+            attrs[row*32+column]=colours[(column//3)%len(colours)]
+            for y in range(row*8,(row+1)*8):
+                for x in range(column*8,column*8+6): pixel(x,y)
+
+    # Keep rows used by mode 1's live scope high-contrast from first display.
+    attrs[21*32:24*32]=bytes((SCOPE_ATTR,))*(3*32)
+    return bytes(bitmap+attrs)
+
 
 def player(data_address, initial_visual=1, title="MUSIC"):
     if initial_visual not in VISUAL_IDS.values():
@@ -691,7 +787,7 @@ def tap(name, code_chunks, screen=None):
         result+=block(header(3,len(code),BANK_LOAD_ADDR,len(code))); result+=block(b"\xff"+code)
     return bytes(result)
 
-def build(ay_path,out_path,name=None,image_path=None,visual="scope"):
+def build(ay_path,out_path,name=None,image_path=None,visual="scope",default_art=True):
     name=name or Path(out_path).stem
     if visual not in VISUAL_IDS:
         raise ValueError("visual must be scope, bars, pulse, colour or demo")
@@ -716,6 +812,8 @@ def build(ay_path,out_path,name=None,image_path=None,visual="scope"):
         with tempfile.NamedTemporaryFile(suffix=".scr") as tmp:
             spectrum_screen.convert(image_path, tmp.name)
             screen=Path(tmp.name).read_bytes()
+    elif default_art:
+        screen=default_screen(name)
     Path(out_path).write_bytes(tap(name,code_chunks,screen))
     print(f"wrote {out_path}: {len(code0)} byte fixed code/data, {len(events)} byte events, {len(code_chunks)-1} bank chunks"
           +(f", {len(screen)} byte screen" if screen else ""))
@@ -726,5 +824,8 @@ if __name__=="__main__":
     p=argparse.ArgumentParser(); p.add_argument("ay"); p.add_argument("tap")
     p.add_argument("--name", help="Spectrum tape name (defaults to output filename)")
     p.add_argument("--image", help="PNG/JPG artwork to show before playback")
+    p.add_argument("--no-artwork",action="store_true",
+                   help="omit the generated title screen when --image is not supplied")
     p.add_argument("--visual",choices=tuple(VISUAL_IDS),default="scope")
-    a=p.parse_args(); build(a.ay,a.tap,name=a.name,image_path=a.image,visual=a.visual)
+    a=p.parse_args(); build(a.ay,a.tap,name=a.name,image_path=a.image,
+                            visual=a.visual,default_art=not a.no_artwork)

@@ -292,6 +292,8 @@ def main() -> None:
     parser.add_argument("--instruments", choices=("auto", "plain"), default="auto",
                         help="map General MIDI programs to AY patches, or use plain square tones")
     parser.add_argument("--image", type=Path, default=None, help="PNG/JPG artwork shown before playback (--mode tap only)")
+    parser.add_argument("--no-artwork", action="store_true",
+                        help="omit generated TAP title artwork when --image is not supplied")
     parser.add_argument("--visual", choices=("scope", "bars", "pulse", "colour", "demo"), default="scope",
                         help="initial TAP visual; keys 1-5 switch effects during playback")
     args = parser.parse_args()
@@ -305,7 +307,8 @@ def main() -> None:
         with tempfile.NamedTemporaryFile(suffix=".ay") as temp:
             compile_ay(args.midi, temp.name, args.drums, args.lead_mode, args.instruments)
             build(temp.name, args.output, (args.title or args.midi.stem).upper(),
-                  image_path=args.image, visual=args.visual)
+                  image_path=args.image, visual=args.visual,
+                  default_art=not args.no_artwork)
     else:
         convert(args.midi, args.output, args.title or args.midi.stem, args.lead_mode)
 
