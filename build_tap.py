@@ -272,11 +272,10 @@ def basic_loader(name="POPCORN", has_image=False):
     bodies=[]
     if has_image:
         # SCREEN$ is just CODE 16384 with the length implied; the ROM streams
-        # the picture into the display file live as it loads, then PAUSE 0
-        # waits for a keypress (indefinitely - 0 means "no timeout") before
-        # the second LOAD brings in the player and starts the music.
+        # the picture into the display file live as it loads, then straight
+        # into the second LOAD - no keypress wait, matching how loading a
+        # real tape looks (picture builds up, then the music data loads).
         bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
-        bodies.append(bytes((TOK["PAUSE"],))+b" "+num(0))
     bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
     bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(BASE))
     for no,body in enumerate(bodies, start=1):
