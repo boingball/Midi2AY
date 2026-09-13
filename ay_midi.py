@@ -182,15 +182,16 @@ def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart"):
     out.append(255)
     return bytes(out), round(60000000/(tempo if tempo else 500000))
 
-def compile_ay(input_path, output_path, drum_mode="off"):
+def compile_ay(input_path, output_path, drum_mode="off", lead_mode="smart"):
     division,notes,tempos=read_midi(input_path)
     tempo=tempos[0][1] if tempos else 500000
-    frames,_=frames_for(notes,division,drum_mode,tempo)
+    frames,_=frames_for(notes,division,drum_mode,tempo,lead_mode)
     Path(output_path).write_bytes(frames)
-    print(f"wrote {output_path} ({len(frames)} bytes, {len(frames)//14} AY frames, drums={drum_mode})")
+    print(f"wrote {output_path} ({len(frames)} bytes, {len(frames)//14} AY frames, drums={drum_mode}, lead={lead_mode})")
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
     p.add_argument("midi",type=Path); p.add_argument("output",type=Path)
     p.add_argument("--drums",choices=("off","noise","hybrid"),default="off")
-    a=p.parse_args(); compile_ay(a.midi,a.output,a.drums)
+    p.add_argument("--lead-mode",choices=("smart","top","middle"),default="smart")
+    a=p.parse_args(); compile_ay(a.midi,a.output,a.drums,a.lead_mode)
