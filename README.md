@@ -56,4 +56,18 @@ The machine-code path can package compressed AY register events into a self-star
 python3 midi2ay.py song.mid song.tap --mode tap --drums noise
 ```
 
-The resulting TAP loads at 32768, waits on the Spectrum's 50 Hz interrupt and drives the AY directly. The event stream stores only changed AY registers, keeping longer songs practical on a 128K machine. The current player has no artwork or waveform overlay yet; those are planned as optional TAP blocks.
+The resulting TAP loads at 32768, waits on the Spectrum's 50 Hz interrupt and drives the AY directly. The event stream stores only changed AY registers, keeping longer songs practical on a 128K machine.
+
+### Artwork before playback
+
+Pass `--image` with a PNG or JPG to show cover art before the music starts:
+
+```
+python3 midi2ay.py song.mid song.tap --mode tap --drums noise --image cover.jpg
+```
+
+The image is converted to a native Spectrum screen (via `spectrum_screen.py`) and loaded first with `LOAD "name" SCREEN$`, which streams the picture into the display file live as it loads. A `PAUSE 0` then waits for any keypress before the second `LOAD` brings in the player and starts the music.
+
+### Scope analyser
+
+The player draws a live 3-channel oscilloscope-style trace in a thin strip across the bottom of the screen (the last 3 character rows), overlaid on the artwork. Each channel's trace reacts to its own AY volume (vertical position within its band) and tone period (animation speed) every tick. This is a stylised, reactive visualisation rather than a sample-accurate waveform - simulating the real ~1.77MHz AY output sample-by-sample inside a 50Hz interrupt isn't possible on a 3.5MHz Z80. Measured worst-case cost is well under half of the available 50Hz interrupt budget, alongside the register player and the ROM's own interrupt overhead.
