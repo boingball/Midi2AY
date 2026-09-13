@@ -19,10 +19,6 @@ TMP=32609
 # ticks where nothing changed.
 PER_A,PER_B,PER_C,VOL_A,VOL_B,VOL_C=range(32610,32616)
 PHASE_A,PHASE_B,PHASE_C=range(32616,32619)
-TOPSEL=32619
-BOTSEL=32620
-WAVESRC_TOP=32621
-WAVESRC_BOT=32623
 
 def word(n): return bytes((n&255,n>>8))
 def op(*b): return bytes(b)
@@ -49,26 +45,29 @@ ATTR_BASE=0x5800+21*32
 ATTR_LEN=32*3
 SCOPE_ATTR=0x44 # bright green ink on black paper
 
-# Eight column-rotations of a two-level square wave (period 8 columns, tiled
-# 4x across the 32-byte-wide screen). WAVE_TABLE is the "high" pattern drawn
-# into the channel's top row; WAVE_TABLE_INV is its bitwise complement,
-# drawn into the bottom row, so together they form one proper 2-level
-# square-wave trace instead of a single thin line. Rotation is driven by a
-# per-channel phase counter so each channel's trace visibly animates at a
-# rate reacting to its current pitch.
-def wave_rotation(r):
-    return bytes(0xff if ((col+r)%8)<4 else 0x00 for col in range(32))
-WAVE_TABLE=b"".join(wave_rotation(r) for r in range(8))
-WAVE_TABLE_INV=bytes(b^0xff for b in WAVE_TABLE)
-
-# How far apart the top/bottom trace rows sit within a channel's 8-row band,
-# driven by volume: louder notes swing wider (bigger, more visible), silence
-# (volume 0) blanks the whole band via the out-of-range sentinel row 8.
-def amp_for(v):
-    if v==0: return 0
-    return min(3, 1+(v-1)//4)
-VOL_TO_TOP=bytes(8 if amp_for(v)==0 else 4-amp_for(v) for v in range(16))
-VOL_TO_BOT=bytes(8 if amp_for(v)==0 else 4+amp_for(v) for v in range(16))
+# A smooth travelling triangle wave, one continuous thin line sweeping the
+# full 8-pixel height of a channel's band across the full 256-pixel screen
+# width, computed at per-pixel resolution (not per byte-column) so it reads
+# as a genuine sloped/curved trace rather than blocky flat-topped steps.
+# WAVE_PHASES rotated copies give a smoothly travelling animation; the
+# per-channel phase counter (pitch-driven, see scope_draw) picks which one
+# plays each tick. Each phase is a full 8-row x 32-byte picture (256 bytes):
+# drawing it is then just 8 back-to-back 32-byte block copies, one per row,
+# with no per-row decision needed - silence instead draws 8 copies of a
+# blank 32-byte row.
+WAVE_PHASES=16
+WAVE_PERIOD_PX=128
+def wave_row_at(x, phase):
+    o = (x + phase*(WAVE_PERIOD_PX//WAVE_PHASES)) % WAVE_PERIOD_PX
+    half = WAVE_PERIOD_PX//2
+    return round(o/half*7) if o<half else round((WAVE_PERIOD_PX-o)/half*7)
+def wave_picture(phase):
+    rows = [bytearray(32) for _ in range(8)]
+    for x in range(256):
+        y = wave_row_at(x, phase)
+        rows[y][x//8] |= 0x80 >> (x%8)
+    return b"".join(bytes(r) for r in rows)
+WAVE_TABLE=b"".join(wave_picture(p) for p in range(WAVE_PHASES))
 
 # Maps AY register index (0-13) to a slot in the 6-byte shadow area above
 # (PER_A..VOL_C), or 0xff for registers the scope doesn't track.
@@ -187,41 +186,17 @@ def player(data_address):
     b+=op(0xed,0xb0)+op(0xc9) # LDIR; RET
 
     # --- 3-channel oscilloscope-style scope analyser -----------------------
-    # draw_row: DE=dest screen address, A=row index (0-7). Fills that row
-    # with the current top-row or bottom-row wave pattern if it's one of the
-    # channel's two selected trace rows (volume-driven separation), else
-    # blanks it. Shared by all 24 row draws below instead of unrolling them,
-    # to keep the code compact.
-    mark("draw_row")
-    b+=op(0x47) # LD B,A
-    b+=ld_a_mem(TOPSEL)
-    b+=op(0xb8) # CP B
-    jr(0x28,"draw_row_top")
-    b+=ld_a_mem(BOTSEL)
-    b+=op(0xb8) # CP B
-    jr(0x28,"draw_row_bot")
-    ld_hl_label("zero32")
-    jr(0x18,"draw_row_copy")
-    mark("draw_row_top")
-    b+=ld_hl_mem(WAVESRC_TOP)
-    jr(0x18,"draw_row_copy")
-    mark("draw_row_bot")
-    b+=ld_hl_mem(WAVESRC_BOT)
-    mark("draw_row_copy")
-    b+=op(0x01)+word(32)+op(0xed,0xb0)+op(0xc9) # LD BC,32; LDIR; RET
-
+    # Each channel's 8-row band is filled with 8 back-to-back 32-byte block
+    # copies. For a playing channel the source is one full 256-byte phase
+    # picture from WAVE_TABLE (LDIR auto-advances HL by 32 after each row,
+    # so the whole picture drops in with no per-row addressing needed);
+    # for a silent channel every row instead copies the same blank 32-byte
+    # source, i.e. the whole band goes dark.
     mark("scope_draw")
     for ch,(per_var,vol_var,phase_var,rows) in enumerate(zip(
             (PER_A,PER_B,PER_C),(VOL_A,VOL_B,VOL_C),(PHASE_A,PHASE_B,PHASE_C),CHANNEL_ROWS)):
-        # Top/bottom trace rows, looked up from volume: louder = wider
-        # swing (bigger, more visible), volume 0 = both rows sentinel 8
-        # (out of range), blanking the whole band for a silent channel.
-        b+=ld_a_mem(vol_var)+op(0x26,0)+op(0x6f) # LD A,(VOL_x); LD H,0; LD L,A
-        ld_de_label("vol_to_top"); b+=op(0x19) # LD DE,vol_to_top; ADD HL,DE
-        b+=op(0x7e)+ld_mem_a(TOPSEL) # LD A,(HL); LD (TOPSEL),A
-        b+=ld_a_mem(vol_var)+op(0x26,0)+op(0x6f) # LD A,(VOL_x); LD H,0; LD L,A
-        ld_de_label("vol_to_bot"); b+=op(0x19) # LD DE,vol_to_bot; ADD HL,DE
-        b+=op(0x7e)+ld_mem_a(BOTSEL) # LD A,(HL); LD (BOTSEL),A
+        b+=ld_a_mem(vol_var)+op(0xb7) # LD A,(VOL_x); OR A
+        jr(0x28,f"ch_silent_{ch}")
         # Advance this channel's phase by (255 - period_low): a coarse,
         # cheap stand-in for "faster wiggle at higher pitch" - not an
         # audio-accurate frequency, just a reactive, animated trace, since
@@ -230,24 +205,25 @@ def player(data_address):
         b+=ld_a_mem(per_var)+op(0x2f)+op(0x47) # LD A,(PER_x); CPL; LD B,A
         b+=ld_a_mem(phase_var)+op(0x80) # LD A,(PHASE_x); ADD A,B
         b+=ld_mem_a(phase_var)
-        b+=op(0xe6,7)+op(0x26,0)+op(0x6f) # AND 7; LD H,0; LD L,A
-        b+=op(0x29)*5 # ADD HL,HL x5 (phase_index * 32)
-        b+=op(0xe5) # PUSH HL (keep a copy for the bottom/inverted lookup)
+        b+=op(0xe6,WAVE_PHASES-1) # AND (WAVE_PHASES-1) -> phase_index
+        b+=op(0x67)+op(0x2e,0) # LD H,A; LD L,0  (HL = phase_index*256)
         ld_de_label("wave_table"); b+=op(0x19) # LD DE,wave_table; ADD HL,DE
-        b+=ld_mem_hl(WAVESRC_TOP)
-        b+=op(0xe1) # POP HL
-        ld_de_label("wave_table_inv"); b+=op(0x19) # LD DE,wave_table_inv; ADD HL,DE
-        b+=ld_mem_hl(WAVESRC_BOT)
-        for r,addr in enumerate(rows):
-            b+=op(0x11)+word(addr)+op(0x3e,r) # LD DE,addr; LD A,r
-            call_label("draw_row")
+        for addr in rows:
+            b+=op(0x11)+word(addr) # LD DE,addr
+            b+=op(0x01)+word(32) # LD BC,32
+            b+=op(0xed,0xb0) # LDIR (advances HL by 32 for the next row)
+        jr(0x18,f"ch_done_{ch}")
+        mark(f"ch_silent_{ch}")
+        for addr in rows:
+            ld_hl_label("zero32")
+            b+=op(0x11)+word(addr) # LD DE,addr
+            b+=op(0x01)+word(32) # LD BC,32
+            b+=op(0xed,0xb0) # LDIR
+        mark(f"ch_done_{ch}")
     b+=op(0xc9) # RET
 
     mark("reg_to_slot"); b+=REG_TO_SLOT
-    mark("vol_to_top"); b+=VOL_TO_TOP
-    mark("vol_to_bot"); b+=VOL_TO_BOT
     mark("wave_table"); b+=WAVE_TABLE
-    mark("wave_table_inv"); b+=WAVE_TABLE_INV
     mark("zero32"); b+=bytes(32)
 
     for pos,name in rel:
