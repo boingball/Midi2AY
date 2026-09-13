@@ -5,7 +5,6 @@ import struct
 
 BASE=32768
 DATA=BASE+512
-PROG=23755
 WAIT=32600
 PTR=32602
 PLAYING=32604
@@ -127,9 +126,13 @@ def tap(name,code):
     def header(kind,length,param1,param2):
         return bytes((0,kind))+name[:10].encode("ascii").ljust(10,b" ")+struct.pack("<HH",length,param1)+struct.pack("<H",param2)
     result=bytearray()
-    # Keep BASIC's VARS pointer immediately after the loaded program.  It
-    # must not point into the machine-code/data block at 32768.
-    result+=block(header(0,len(basic),10,PROG+len(basic))); result+=block(b"\xff"+basic)
+    # The Program header's second parameter is the offset from the start of
+    # the program to the start of variables, NOT an absolute address; the
+    # ROM computes VARS = PROG + param2 itself.  Passing PROG+len(basic)
+    # here made the ROM add PROG twice, corrupting VARS/E_LINE right after
+    # the loader block finished loading and crashing the tape immediately.
+    # No variables are saved, so this must equal the program's own length.
+    result+=block(header(0,len(basic),10,len(basic))); result+=block(b"\xff"+basic)
     result+=block(header(3,len(code),BASE,len(code))); result+=block(b"\xff"+code)
     return bytes(result)
 
