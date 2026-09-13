@@ -279,6 +279,40 @@ def compress(frames):
             out+=b"\xff\xff"
     return bytes(out)
 
+def record_length(events, pos):
+    mask=struct.unpack_from("<H",events,pos)[0]
+    if mask & 0xc000:
+        raise ValueError("reserved event mask")
+    return 2 + mask.bit_count() + 2
+
+def split_events(events, first_capacity):
+    # Split records into a fixed-bank chunk and 16K bank chunks.
+    if not events:
+        return [b""]
+    chunks=[]
+    pos=0
+    capacity=first_capacity
+    while pos<len(events):
+        chunk=bytearray()
+        while pos<len(events):
+            length=record_length(events,pos)
+            reserve=2 if pos+length<len(events) else 0
+            if len(chunk)+length+reserve>capacity:
+                break
+            chunk.extend(events[pos:pos+length])
+            pos+=length
+        if not chunk:
+            raise ValueError("event record does not fit in bank")
+        if pos<len(events):
+            chunk.extend(BANK_MARKER)
+            chunk.extend(b"\0"*(capacity-len(chunk)))
+            chunks.append(bytes(chunk))
+            capacity=BANK_SIZE
+        else:
+            chunks.append(bytes(chunk))
+    return chunks
+
+
 def float5(n):
     if n==0: return b"\0"*5
     e=n.bit_length()
@@ -286,7 +320,9 @@ def float5(n):
     return bytes((e+128,))+mant.to_bytes(4,"big")
 
 TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2}
-def basic_loader(name="POPCORN", has_image=False):
+def basic_loader(name="POPCORN", has_image=False, bank_count=0,
+                 bank_reset_address=BASE+BANK_RESET_OFFSET,
+                 bank_next_address=BASE+BANK_NEXT_OFFSET):
     def num(n): return str(n).encode()+b"\x0e"+float5(n)
     lines=[]
     filename=name[:10].encode("ascii")
@@ -298,6 +334,11 @@ def basic_loader(name="POPCORN", has_image=False):
         # real tape looks (picture builds up, then the music data loads).
         bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
     bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
+    if bank_count:
+        bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_reset_address))
+        for _ in range(1,bank_count):
+            bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_next_address))
+            bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
     bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(BASE))
     for no,body in enumerate(bodies, start=1):
         body=body+b"\r"; lines.append(struct.pack(">H",no*10)+struct.pack("<H",len(body))+body)
@@ -315,47 +356,52 @@ def block(payload):
     return body+bytes((checksum,))
 SCREEN_ADDR=16384
 SCREEN_LEN=6912
-def tap(name,code,screen=None):
-    basic=basic_loader(name, has_image=screen is not None)
+def tap(name, code_chunks, screen=None):
+    if not code_chunks:
+        raise ValueError("at least one code chunk is required")
+    if len(code_chunks)>8:
+        raise ValueError("128K TAP supports at most seven bank chunks")
+    basic=basic_loader(name, has_image=screen is not None,
+                       bank_count=len(code_chunks)-1)
     def header(kind,length,param1,param2):
         return bytes((0,kind))+name[:10].encode("ascii").ljust(10,b" ")+struct.pack("<HH",length,param1)+struct.pack("<H",param2)
     result=bytearray()
-    # The Program header's second parameter is the offset from the start of
-    # the program to the start of variables, NOT an absolute address; the
-    # ROM computes VARS = PROG + param2 itself.  Passing PROG+len(basic)
-    # here made the ROM add PROG twice, corrupting VARS/E_LINE right after
-    # the loader block finished loading and crashing the tape immediately.
-    # No variables are saved, so this must equal the program's own length.
     result+=block(header(0,len(basic),10,len(basic))); result+=block(b"\xff"+basic)
     if screen is not None:
         if len(screen)!=SCREEN_LEN: raise ValueError(f"screen must be {SCREEN_LEN} bytes")
         result+=block(header(3,len(screen),SCREEN_ADDR,len(screen))); result+=block(b"\xff"+screen)
-    result+=block(header(3,len(code),BASE,len(code))); result+=block(b"\xff"+code)
+    for index,code in enumerate(code_chunks):
+        address=BASE if index==0 else BANK_LOAD_ADDR
+        limit=0x10000-BASE if index==0 else BANK_SIZE
+        if len(code)>limit: raise ValueError("code chunk is too large")
+        result+=block(header(3,len(code),address,len(code))); result+=block(b"\xff"+code)
     return bytes(result)
 
 def build(ay_path,out_path,name="POPCORN",image_path=None):
     raw=Path(ay_path).read_bytes()
     frames=[raw[i:i+14] for i in range(0,len(raw)-1,14) if len(raw[i:i+14])==14]
     events=compress(frames)
-    # player()'s length doesn't depend on the data address embedded in it
-    # (any 16-bit immediate is 2 bytes either way), so size it once with a
-    # placeholder address, then round up to place the actual data area.
     player_len=len(player(0))
     data_address=BASE+((player_len+0xff)//0x100)*0x100
-    code=bytearray(player(data_address))
-    code.extend(b"\0"*(data_address-(BASE+len(code))))
-    code.extend(events)
-    # Ensure the event stream and player remain below the 128K linear space.
-    if len(code)>65536-BASE: raise ValueError("music does not fit in 48K above BASIC")
+    chunks=split_events(events, BANK_LOAD_ADDR-data_address)
+    code0=bytearray(player(data_address))
+    code0.extend(b"\0"*(data_address-(BASE+len(code0))))
+    code0.extend(chunks[0])
+    if len(chunks)>1 and len(code0)!=BANK_LOAD_ADDR-BASE:
+        raise ValueError("first bank chunk was not padded to C000")
+    if len(chunks)>8:
+        raise ValueError("music needs more than the seven available RAM banks")
+    code_chunks=[bytes(code0)]+chunks[1:]
     screen=None
     if image_path is not None:
         import spectrum_screen, tempfile
         with tempfile.NamedTemporaryFile(suffix=".scr") as tmp:
             spectrum_screen.convert(image_path, tmp.name)
             screen=Path(tmp.name).read_bytes()
-    Path(out_path).write_bytes(tap(name,bytes(code),screen))
-    print(f"wrote {out_path}: {len(code)} bytes machine code/data, {len(events)} bytes events"
+    Path(out_path).write_bytes(tap(name,code_chunks,screen))
+    print(f"wrote {out_path}: {len(code0)} byte fixed code/data, {len(events)} byte events, {len(code_chunks)-1} bank chunks"
           +(f", {len(screen)} byte screen" if screen else ""))
+
 
 if __name__=="__main__":
     import argparse
