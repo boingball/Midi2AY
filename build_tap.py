@@ -35,11 +35,19 @@ def player(data_address):
     # is used instead - but only flip the ROM-select bit (4). The event
     # data above 0xC000 was loaded into whichever RAM bank port 0x7ffd
     # already selects; forcing a specific bank here would make our own code
-    # read a different bank than the one LOAD actually wrote into, which is
-    # exactly what cut playback short after only the first few frames.
+    # read a different bank than the one LOAD actually wrote into.
+    #
+    # The ROM's own interrupt handler reads BANK_M every tick to decide what
+    # to write back to port 0x7ffd (it toggles the ROM bit on and off each
+    # frame to poll the extended keyboard). Writing the port ourselves
+    # without also updating BANK_M leaves that shadow variable stale, so the
+    # ROM's next toggle XORs the wrong base value and can scramble the RAM
+    # bank bits too - silently switching away the bank our event data lives
+    # in a few dozen frames in. Keep BANK_M in sync with what we write.
     b+=op(0xf3) # DI while we repoint ROM/interrupt mode
     b+=op(0x3a)+word(0x5b5c) # LD A,(BANK_M) - the shadow of the last port 0x7ffd write
     b+=op(0xe6,0xef) # AND 0xef - clear only the ROM-select bit, keep the current RAM bank
+    b+=op(0x32)+word(0x5b5c) # LD (BANK_M),A - keep the ROM's shadow copy in sync
     b+=op(0x01)+word(0x7ffd) # LD BC,0x7ffd
     b+=op(0xed,0x79) # OUT (C),A
     b+=op(0xed,0x56) # IM 1
