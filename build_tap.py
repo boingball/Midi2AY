@@ -119,6 +119,7 @@ def player(data_address):
     # bank bits too - silently switching away the bank our event data lives
     # in a few dozen frames in. Keep BANK_M in sync with what we write.
     b+=op(0xf3)
+    b+=op(0x31)+word(0x7ff0) # keep the return stack in fixed RAM below C000
     b+=op(0xaf)+ld_mem_a(BANK_STATE)
     b+=ld_mem_a(0x5b5c)
     b+=op(0x01)+word(0x7ffd)+op(0xed,0x79)
