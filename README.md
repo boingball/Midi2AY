@@ -66,7 +66,7 @@ Pass `--image` with a PNG or JPG to show cover art before the music starts:
 python3 midi2ay.py song.mid song.tap --mode tap --drums noise --image cover.jpg
 ```
 
-The image is converted to a native Spectrum screen (via `spectrum_screen.py`) and loaded first with `LOAD "name" SCREEN$`, which streams the picture into the display file live as it loads. A `PAUSE 0` then waits for any keypress before the second `LOAD` brings in the player and starts the music.
+The image is converted to a native Spectrum screen via `spectrum_screen.py`. The fixed player loads first, followed by the artwork. For banked songs, the loader saves a pristine copy of the 6,912-byte screen in RAM bank 0; after the remaining tape blocks have loaded, it restores the picture from RAM immediately before playback. This removes the ROM’s `Bytes:` messages without storing the artwork twice on tape.
 
 ### Scope analyser
 
@@ -114,7 +114,7 @@ python3 midi2ay.py song.mid song.tap --mode tap --lead-mode smart --drums hybrid
 
 Long TAP songs automatically split their compressed AY event stream between the fixed player area and the safe pageable 16K RAM banks `1, 3, 4, 6, 7` on a 128K Spectrum. Banks 2 and 5 are excluded because they are permanently mapped at `0x8000` and `0x4000`; loading music through those aliases would overwrite the player or display.
 
-The BASIC loader uses `CLEAR 30000`, pages each extra bank before loading it, and the machine-code player follows transition markers during playback. This keeps drum-enabled output practical for longer songs while preserving artwork and the fixed player.
+The BASIC loader uses `CLEAR 30000`, pages each extra bank before loading it, and the machine-code player follows transition markers during playback. RAM bank 0 temporarily holds a clean artwork copy while those blocks load. Tape headers use the MIDI filename (or `--title`), uppercased and trimmed to the Spectrum’s 10-character limit; direct `build_tap.py` use defaults to the output filename. This keeps drum-enabled output practical for longer songs while preserving artwork and the fixed player.
 
 Example:
 
