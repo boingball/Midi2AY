@@ -24,7 +24,7 @@ The output uses Spectrum 128 PLAY syntax, including tempo, octave, duration sepa
 
 ## Scope
 
-This is an experimental converter, not a General MIDI player. It currently supports three AY tone voices, simple tempo handling and BASIC output. Future work can add separate MIDI-track routing, volume envelopes, noise, TAP/TZX packaging and a machine-code AY player.
+This is an experimental converter, not a General MIDI player. It supports three AY tone voices, MIDI velocity/program tracking, smart lead routing, channel-10 percussion, machine-code frame output and self-starting TAP packaging.
 
 No copyrighted MIDI files or song-specific generated output are included in this repository. Use input files you are licensed to use, and keep generated song files outside the public repository unless you have permission to redistribute them.
 
@@ -34,7 +34,7 @@ The optional machine-code path preserves MIDI channel/program information and wr
 
 ```
 python3 midi2ay.py song.mid song.ay --mode ay --drums noise
-python3 midi2ay.py song.mid song.ay --mode ay --drums hybrid
+python3 midi2ay.py song.mid song.ay --mode ay --drums hybrid --lead-mode smart
 ```
 
 `off` ignores percussion, `noise` uses AY noise, and `hybrid` adds a short tone attack for kick-like notes. The current player consumes one 14-register frame per tick; assemble it with a Z80 assembler and call `ay_tick` at 50 Hz.
@@ -71,3 +71,18 @@ The image is converted to a native Spectrum screen (via `spectrum_screen.py`) an
 ### Scope analyser
 
 The player draws a live 3-channel oscilloscope-style trace in a thin strip across the bottom of the screen (the last 3 character rows), overlaid on the artwork. Each channel's trace reacts to its own AY volume (vertical position within its band) and tone period (animation speed) every tick. This is a stylised, reactive visualisation rather than a sample-accurate waveform - simulating the real ~1.77MHz AY output sample-by-sample inside a 50Hz interrupt isn't possible on a 3.5MHz Z80. Measured worst-case cost is well under half of the available 50Hz interrupt budget, alongside the register player and the ROM's own interrupt overhead.
+
+
+## Smart enhanced-AY routing
+
+Enhanced AY and TAP modes default to smart voice routing. The converter follows a likely lead line by pitch continuity between frames, keeps bass at the low end, and uses the remaining voice for accompaniment. This is intended for merged piano MIDI files where the melody is not stored on its own track.
+
+For comparison, the routing can be selected explicitly:
+
+```
+python3 midi2ay.py song.mid song.ay --mode ay --lead-mode smart
+python3 midi2ay.py song.mid song.ay --mode ay --lead-mode top
+python3 midi2ay.py song.mid song.ay --mode ay --lead-mode middle
+```
+
+MIDI channel 10 is treated as percussion when drums are enabled. `noise` uses the AY noise generator and `hybrid` adds a tone attack for kick-like notes. The BASIC mode remains unchanged and continues to use editable `PLAY A$,B$,C$` output.
