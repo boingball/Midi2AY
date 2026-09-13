@@ -290,6 +290,8 @@ def main() -> None:
     parser.add_argument("--mode", choices=("basic", "ay", "tap"), default="basic")
     parser.add_argument("--drums", choices=("off", "noise", "hybrid"), default="off")
     parser.add_argument("--image", type=Path, default=None, help="PNG/JPG artwork shown before playback (--mode tap only)")
+    parser.add_argument("--visual", choices=("scope", "bars", "pulse", "colour"), default="scope",
+                        help="initial TAP visual; keys 1-4 switch effects during playback")
     args = parser.parse_args()
     if args.mode == "ay":
         from ay_midi import compile_ay
@@ -300,7 +302,8 @@ def main() -> None:
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".ay") as temp:
             compile_ay(args.midi, temp.name, args.drums, args.lead_mode)
-            build(temp.name, args.output, (args.title or args.midi.stem).upper(), image_path=args.image)
+            build(temp.name, args.output, (args.title or args.midi.stem).upper(),
+                  image_path=args.image, visual=args.visual)
     else:
         convert(args.midi, args.output, args.title or args.midi.stem, args.lead_mode)
 
