@@ -125,7 +125,7 @@ python3 midi2ay.py "No Surprises.mid" no_surprises.tap --mode tap --drums hybrid
 
 ## PR7 live visual effects
 
-TAP mode includes four visualisers that can be changed while the music is playing:
+TAP mode includes five visualisers that can be changed while the music is playing:
 
 | Key | Mode | Effect |
 | ---: | --- | --- |
@@ -133,13 +133,16 @@ TAP mode includes four visualisers that can be changed while the music is playin
 | 2 | Bars | Cyan, yellow and magenta AY channel volume bars |
 | 3 | Pulse | Music-reactive border with a reversible BRIGHT sweep over the artwork |
 | 4 | Colour | Animated Spectrum colour bars in the visual strip |
+| 5 | Demo | Centred MIDI title with three bouncing 16x16 colour bubbles |
 
-Choose the initial mode with `--visual`; keys 1-4 remain active regardless of the initial selection:
+Choose the initial mode with `--visual`; keys 1-5 remain active regardless of the initial selection:
 
 ```
-python3 midi2ay.py song.mid song.tap --mode tap --image cover.png --visual bars
+python3 midi2ay.py song.mid song.tap --mode tap --image cover.png --visual demo
 ```
 
-The effects run once per 50 Hz player tick. They preserve the banked event stream and artwork backup, and avoid the cycle-timed full-screen raster approach that would interfere with AY timing.
+The player services the AY and visual modes at 50 Hz; mode 5 moves its bubbles on alternate ticks at 25 Hz. Every effect preserves the banked event stream and artwork backup. The title accepts up to 30 characters from the MIDI filename or `--title`, independently of the Spectrum's 10-character tape-header limit.
+
+[lib-spectrum's filled-vector 3D demo](https://github.com/breakintoprogram/lib-spectrum/blob/master/demo/demo_3d.z80) is a genuine rotating 3D renderer, but its stock 6K off-screen buffer occupies pageable music memory. Mode 5 therefore uses a smaller artwork-safe renderer inspired by its [sprite demo](https://github.com/breakintoprogram/lib-spectrum/blob/master/demo/demo_sprites.z80), leaving enough frame time for dense AY updates and bank changes.
 
 The keyboard-row scanning and colour-table approach are adapted from ideas and routines in Dean Belfield's MIT-licensed [lib-spectrum](https://github.com/breakintoprogram/lib-spectrum). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and licence text.
