@@ -72,7 +72,63 @@ def family(program):
     if program in range(88,96): return "pad"
     return "tone"
 
-def frames_for(notes, division, drum_mode, tempo=500000):
+def _choose_voices(tones, lead_mode="smart", previous_lead=None, previous_middle=None):
+    """Route a polyphonic tone set to AY accompaniment, lead and bass.
+
+    Smart mode keeps the lead voice moving by pitch proximity between frames.
+    This avoids the old top-note rule jumping between chord tones and losing
+    the actual melody in merged piano MIDI files.
+    """
+    by_pitch = {}
+    for note in tones:
+        current = by_pitch.get(note.pitch)
+        if current is None or note.velocity > current.velocity:
+            by_pitch[note.pitch] = note
+    pitches = sorted(by_pitch)
+    if not pitches:
+        return [None, None, None], None, None
+
+    bass_pitch = pitches[0]
+    bass = by_pitch[bass_pitch]
+    lead_candidates = pitches[1:] or pitches
+
+    if lead_mode == "top":
+        lead_pitch = lead_candidates[-1]
+    elif lead_mode == "middle":
+        lead_pitch = lead_candidates[(len(lead_candidates) - 1) // 2]
+    elif lead_mode == "smart":
+        if previous_lead in lead_candidates:
+            lead_pitch = previous_lead
+        elif previous_lead is None:
+            lead_pitch = lead_candidates[-1]
+        else:
+            lead_pitch = min(
+                lead_candidates,
+                key=lambda pitch: (
+                    abs(pitch - previous_lead),
+                    -by_pitch[pitch].velocity,
+                    -pitch,
+                ),
+            )
+    else:
+        raise ValueError("lead mode must be smart, top or middle")
+
+    lead = by_pitch[lead_pitch]
+    middle_candidates = [pitch for pitch in pitches if pitch not in {bass_pitch, lead_pitch}]
+    if not middle_candidates:
+        middle = lead
+        middle_pitch = lead_pitch
+    elif previous_middle in middle_candidates:
+        middle_pitch = previous_middle
+        middle = by_pitch[middle_pitch]
+    else:
+        middle_pitch = middle_candidates[-1]
+        middle = by_pitch[middle_pitch]
+
+    return [middle, lead, bass], lead_pitch, middle_pitch
+
+
+def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart"):
     if notes is None: return b"",tempo
     end=max(n.end for n in notes)
     # MIDI ticks per second = division * 1_000_000 / tempo (microseconds per
@@ -84,23 +140,21 @@ def frames_for(notes, division, drum_mode, tempo=500000):
     step=max(1,round(division*1000000/(tempo*50)))
     total=max(1,math.ceil((end+step)/step))
     out=bytearray()
+    previous_lead = None
+    previous_middle = None
     for frame in range(total):
         a=frame*step; b=a+step
         live=[n for n in notes if n.start<b and n.end>a]
         drums=[n for n in live if n.channel==9] if drum_mode!="off" else []
         tones=[n for n in live if n.channel!=9]
-        tones.sort(key=lambda n:(n.pitch,n.velocity),reverse=True)
-        # Lead, accompaniment, bass: preserve the musically useful extremes.
-        chosen=[]
-        for n in sorted(tones,key=lambda x:x.pitch,reverse=True):
-            if all(n.pitch!=x.pitch for x in chosen): chosen.append(n)
-        lead=chosen[0] if chosen else None
-        bass=min(tones,key=lambda n:n.pitch) if tones else None
-        middle=None
-        for n in chosen:
-            if n is not lead and n is not bass: middle=n; break
-        if middle is None: middle=lead if lead is not None and lead is not bass else None
-        voices=[middle,lead,bass]
+        voices, selected_lead, selected_middle = _choose_voices(tones, lead_mode, previous_lead, previous_middle)
+        middle, lead, bass = voices
+        if tones:
+            previous_lead = selected_lead
+            previous_middle = selected_middle
+        else:
+            previous_lead = None
+            previous_middle = None
         regs=[0]*14; mixer=63
         for i,n in enumerate(voices):
             if n is not None:
