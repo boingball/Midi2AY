@@ -394,7 +394,9 @@ def player(data_address, initial_visual=1, title="MUSIC"):
     b+=op(0x01)+word(31)+op(0xed,0xb0)
     # ROM-font title, centred and capped at 30 characters.
     for x,ch in enumerate(title,title_x):
-        b+=op(0x11)+word(0x3c00+(ord(ch)-32)*8)
+        # The Spectrum ROM's character table is addressed as 0x3c00+A*8;
+        # printable space therefore begins at 0x3d00, not at 0x3c00.
+        b+=op(0x11)+word(0x3c00+ord(ch)*8)
         b+=ld_hl(screen_addr(0,x))+op(0x06,8)
         mark(f"title_char_{x}")
         b+=op(0x1a,0x77,0x13,0x24); jr(0x10,f"title_char_{x}")
