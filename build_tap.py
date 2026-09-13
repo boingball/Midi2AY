@@ -26,6 +26,8 @@ BANK_NEXT_OFFSET=0x1810
 BANK_LOAD_ADDR=0xc000
 BANK_SIZE=0x4000
 BANK_MARKER=b"\xff\xfe"
+# Leave ample room between BASIC's stack and the player state at 32600.
+BASIC_RAMTOP=30000
 
 def word(n): return bytes((n&255,n>>8))
 def op(*b): return bytes(b)
@@ -329,9 +331,10 @@ def basic_loader(name="POPCORN", has_image=False, bank_count=0,
     lines=[]
     filename=name[:10].encode("ascii")
     bodies=[]
-    # Keep the BASIC stack below C000 before the loader pages RAM banks.
-    # Without this, a bank switch can corrupt the BASIC return stack.
-    bodies.append(bytes((TOK["CLEAR"],))+b" "+num(32767))
+    # Keep the BASIC stack below both C000 and the player scratch area at 32600.
+    # CLEAR 32767 left only 148 bytes and repeated LOAD/USR calls could
+    # overwrite BANK_STATE, causing the next page operation to select garbage.
+    bodies.append(bytes((TOK["CLEAR"],))+b" "+num(BASIC_RAMTOP))
     if has_image:
         # SCREEN$ is just CODE 16384 with the length implied; the ROM streams
         # the picture into the display file live as it loads, then straight
