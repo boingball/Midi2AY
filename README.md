@@ -146,3 +146,77 @@ The player services the AY and visual modes at 50 Hz; mode 5 moves its balls on 
 [lib-spectrum's filled-vector 3D demo](https://github.com/breakintoprogram/lib-spectrum/blob/master/demo/demo_3d.z80) is a genuine rotating 3D renderer, but its stock 6K off-screen buffer occupies pageable music memory. Mode 5 therefore uses a smaller artwork-safe renderer inspired by its [sprite demo](https://github.com/breakintoprogram/lib-spectrum/blob/master/demo/demo_sprites.z80), leaving enough frame time for dense AY updates and bank changes.
 
 The keyboard-row scanning and colour-table approach are adapted from ideas and routines in Dean Belfield's MIT-licensed [lib-spectrum](https://github.com/breakintoprogram/lib-spectrum). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and licence text.
+
+
+## PR8 automatic AY instrument synthesis
+
+Enhanced AY and TAP output now turns General MIDI program changes into
+distinct, lightweight AY synth patches. `--instruments auto` is the default;
+use `--instruments plain` for the previous uncoloured square-wave treatment.
+
+```sh
+python3 midi2ay.py song.mid song.tap --mode tap --instruments auto --drums hybrid
+python3 midi2ay.py song.mid song.tap --mode tap --instruments plain --drums hybrid
+```
+
+When `--image` is omitted, TAP mode now generates a deterministic native
+Spectrum title screen from the MIDI filename. It includes the song title,
+starfield, three AY wave traces and a coloured equaliser motif without needing
+Pillow. Pass `--no-artwork` to retain the old screenless TAP behaviour.
+
+The automatic mapper covers all 128 General MIDI programs:
+
+| General MIDI programs | AY family | Treatment |
+| --- | --- | --- |
+| 1-8 | Piano | Immediate attack and percussive decay |
+| 9-16 | Chromatic percussion | Bell-like decay and shimmer |
+| 17-24 | Organ | Sustained level with gentle tremolo |
+| 25-32 | Guitar | Plucked decay and delayed vibrato |
+| 33-40 | Bass | Solid sustain with a short pitch scoop |
+| 41-48 | Strings | Slow attack, release, vibrato and tremolo |
+| 49-56 | Ensemble | Softer attack with chorus-like movement |
+| 57-64 | Brass | Hard attack and pitch scoop |
+| 65-72 | Reed | Breath-like attack and vibrato |
+| 73-80 | Pipe | Clean sustain and vibrato |
+| 81-88 | Synth lead | Fast attack, pitch bite and vibrato |
+| 89-96 | Synth pad | Slow attack/release and tremolo |
+| 97-104 | Synth effects | Strong modulation and shared AY noise |
+| 105-112 | Ethnic | Plucked decay with light vibrato |
+| 113-120 | Percussive | Very short decay with shared AY noise |
+| 121-128 | Sound effects | Pitch movement, tremolo and shared AY noise |
+
+Patch timing is measured in 50 Hz Spectrum frames rather than MIDI ticks, so
+the same program has the same attack and modulation speed at different MIDI
+tempos and PPQN resolutions. Software envelopes keep all three AY voices
+independent and never silence a cell while a source MIDI note remains active.
+When channel-10 drums are present they take ownership of the chip's one shared
+noise generator, preventing an effects patch from changing the drum sound.
+
+The percussion mapper covers the General MIDI drum range rather than falling
+back to inverse-pitch noise. Hybrid mode can choose one noise hit and one tonal
+hit from simultaneous drums: for example, bright tambourine noise can play
+with a separate descending kick sweep on channel C. This fixes MIDI note 54
+tambourine being rendered as a low rumble and hiding Popcorn's kick.
+
+These are deliberately AY interpretations, not sampled General MIDI sounds:
+the hardware still supplies three square-wave tone channels, one shared noise
+generator and one shared hardware envelope.
+
+### Why digidrums are separate
+
+A digidrum uses one AY volume register as a crude 4-bit digital-to-analogue
+converter. A machine-code loop writes sample values `0..15` hundreds or
+thousands of times per second, producing a recognisable recorded kick or snare
+instead of synthesising it from tone and noise.
+
+The current event player updates at 50 Hz, which is ideal for notes and visuals
+but far too slow for sample playback. Genuine digidrums therefore require a
+separate high-rate interrupt/player path, sample storage and a policy for
+temporarily borrowing one AY channel. They are not enabled by PR8: labelling a
+50 Hz volume envelope as a digidrum would be misleading.
+
+Run the dependency-free regression suite with:
+
+```sh
+python3 -m unittest -v
+```
