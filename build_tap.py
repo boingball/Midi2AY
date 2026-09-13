@@ -321,7 +321,7 @@ def float5(n):
     mant=round((n/(1<<(e-1))-1)*(1<<31))
     return bytes((e+128,))+mant.to_bytes(4,"big")
 
-TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2,"CLEAR":0xfd}
+TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2,"CLEAR":0xfe}
 def basic_loader(name="POPCORN", has_image=False, bank_count=0,
                  bank_reset_address=BASE+BANK_RESET_OFFSET,
                  bank_next_address=BASE+BANK_NEXT_OFFSET):
