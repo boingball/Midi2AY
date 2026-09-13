@@ -290,8 +290,8 @@ def main() -> None:
     parser.add_argument("--mode", choices=("basic", "ay", "tap"), default="basic")
     parser.add_argument("--drums", choices=("off", "noise", "hybrid"), default="off")
     parser.add_argument("--image", type=Path, default=None, help="PNG/JPG artwork shown before playback (--mode tap only)")
-    parser.add_argument("--visual", choices=("scope", "bars", "pulse", "colour"), default="scope",
-                        help="initial TAP visual; keys 1-4 switch effects during playback")
+    parser.add_argument("--visual", choices=("scope", "bars", "pulse", "colour", "demo"), default="scope",
+                        help="initial TAP visual; keys 1-5 switch effects during playback")
     args = parser.parse_args()
     if args.mode == "ay":
         from ay_midi import compile_ay
