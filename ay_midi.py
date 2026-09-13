@@ -75,9 +75,11 @@ def family(program):
 def _choose_voices(tones, lead_mode="smart", previous_lead=None, previous_middle=None):
     """Route a polyphonic tone set to AY accompaniment, lead and bass.
 
-    Smart mode keeps the lead voice moving by pitch proximity between frames.
-    This avoids the old top-note rule jumping between chord tones and losing
-    the actual melody in merged piano MIDI files.
+    Smart mode combines pitch continuity with note shape, velocity and
+    instrument family. Shorter, more expressive notes are favoured over a
+    sustained backing note that happens to remain close to the old pitch.
+    This matters for merged arrangements such as Popcorn, where the chorus
+    lead sits over a long strings part.
     """
     by_pitch = {}
     for note in tones:
@@ -97,19 +99,23 @@ def _choose_voices(tones, lead_mode="smart", previous_lead=None, previous_middle
     elif lead_mode == "middle":
         lead_pitch = lead_candidates[(len(lead_candidates) - 1) // 2]
     elif lead_mode == "smart":
-        if previous_lead in lead_candidates:
-            lead_pitch = previous_lead
-        elif previous_lead is None:
-            lead_pitch = lead_candidates[-1]
-        else:
-            lead_pitch = min(
-                lead_candidates,
-                key=lambda pitch: (
-                    abs(pitch - previous_lead),
-                    -by_pitch[pitch].velocity,
-                    -pitch,
-                ),
-            )
+        def lead_score(pitch):
+            note = by_pitch[pitch]
+            family_bonus = {
+                "lead": 500,
+                "brass": 220,
+                "strings": 100,
+                "tone": 0,
+                "pad": -180,
+                "bass": -100,
+            }.get(family(note.program), 0)
+            # A short note is more likely to be the melody than a held pad or
+            # strings note. Cap this term so continuity still matters.
+            short_note_bonus = 2 * max(0, 300 - min(300, note.end - note.start))
+            continuity = -3 * abs(pitch - previous_lead) if previous_lead is not None else 0
+            return family_bonus + short_note_bonus + note.velocity + continuity
+
+        lead_pitch = max(lead_candidates, key=lead_score)
     else:
         raise ValueError("lead mode must be smart, top or middle")
 
