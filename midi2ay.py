@@ -289,6 +289,7 @@ def main() -> None:
     parser.add_argument("--lead-mode", choices=("smart", "top", "middle"), default="smart")
     parser.add_argument("--mode", choices=("basic", "ay", "tap"), default="basic")
     parser.add_argument("--drums", choices=("off", "noise", "hybrid"), default="off")
+    parser.add_argument("--image", type=Path, default=None, help="PNG/JPG artwork shown before playback (--mode tap only)")
     args = parser.parse_args()
     if args.mode == "ay":
         from ay_midi import compile_ay
@@ -299,7 +300,7 @@ def main() -> None:
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".ay") as temp:
             compile_ay(args.midi, temp.name, args.drums)
-            build(temp.name, args.output, (args.title or args.midi.stem).upper())
+            build(temp.name, args.output, (args.title or args.midi.stem).upper(), image_path=args.image)
     else:
         convert(args.midi, args.output, args.title or args.midi.stem, args.lead_mode)
 
