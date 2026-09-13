@@ -244,7 +244,13 @@ def player(data_address):
     b+=op(0xaf)+ld_mem_a(BANK_STATE); jp_label("bank_next")
     while len(b)<BANK_NEXT_OFFSET: b.append(0)
     mark("bank_next")
-    b+=ld_a_mem(BANK_STATE)+op(0x3c,0xe6,0x07)+ld_mem_a(BANK_STATE)
+    b+=ld_a_mem(BANK_STATE)+op(0x3c)
+    # Banks 2 and 5 are already permanently mapped at 8000 and 4000.
+    # Paging either at C000 and loading data would overwrite the player or
+    # display respectively, so the usable sequence is 1,3,4,6,7.
+    b+=op(0xfe,0x02,0x20,0x01,0x3c) # CP 2; JR NZ,+1; INC A
+    b+=op(0xfe,0x05,0x20,0x01,0x3c) # CP 5; JR NZ,+1; INC A
+    b+=ld_mem_a(BANK_STATE)
     # Preserve BANK_M bits 3-7 while replacing only RAM-bank bits 0-2.
     # This is essential while called from 128 BASIC: clearing bit 4 would
     # page ROM 0 over ROM 1 before RET, so BASIC resumes in the wrong ROM.
@@ -375,8 +381,8 @@ SCREEN_LEN=6912
 def tap(name, code_chunks, screen=None):
     if not code_chunks:
         raise ValueError("at least one code chunk is required")
-    if len(code_chunks)>8:
-        raise ValueError("128K TAP supports at most seven bank chunks")
+    if len(code_chunks)>6:
+        raise ValueError("128K TAP supports at most five extra bank chunks")
     basic=basic_loader(name, has_image=screen is not None,
                        bank_count=len(code_chunks)-1)
     def header(kind,length,param1,param2):
@@ -405,8 +411,8 @@ def build(ay_path,out_path,name="POPCORN",image_path=None):
     code0.extend(chunks[0])
     if len(chunks)>1 and len(code0)!=BANK_LOAD_ADDR-BASE:
         raise ValueError("first bank chunk was not padded to C000")
-    if len(chunks)>8:
-        raise ValueError("music needs more than the seven available RAM banks")
+    if len(chunks)>6:
+        raise ValueError("music needs more than the five safe extra RAM banks")
     code_chunks=[bytes(code0)]+chunks[1:]
     screen=None
     if image_path is not None:
