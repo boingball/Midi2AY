@@ -25,6 +25,12 @@ VISUAL_MODE=32620
 VISUAL_LAST=32621
 VISUAL_PHASE=32622
 PULSE_ROW=32623
+DEMO_FRAME=32624
+# Four bytes per bouncing ball: character-column X, character-row Y, signed
+# X velocity and signed Y velocity.  Character-aligned movement keeps the
+# XOR sprite tiny and, crucially, lets it erase itself without another
+# screen-sized backing buffer competing with the banked music stream.
+BALL_STATES=(32625,32629,32633)
 TICK_OFFSET=0x60
 BANK_RESET_OFFSET=0x1800
 BANK_NEXT_OFFSET=0x1810
@@ -92,21 +98,23 @@ FULL32=bytes((0xff,))*32
 # Maps AY register index (0-13) to a slot in the 6-byte shadow area above
 # (PER_A..VOL_C), or 0xff for registers the scope doesn't track.
 REG_TO_SLOT=bytes((0,0xff,1,0xff,2,0xff,0xff,0xff,3,4,5,0xff,0xff,0xff))
-VISUAL_IDS={"scope":1,"bars":2,"pulse":3,"colour":4}
+VISUAL_IDS={"scope":1,"bars":2,"pulse":3,"colour":4,"demo":5}
 
-def player(data_address, initial_visual=1):
+def player(data_address, initial_visual=1, title="MUSIC"):
     if initial_visual not in VISUAL_IDS.values():
-        raise ValueError("initial visual mode must be 1-4")
+        raise ValueError("initial visual mode must be 1-5")
+    title="".join(ch if 32<=ord(ch)<127 else "_" for ch in str(title).upper())[:30] or "MUSIC"
+    title_x=(32-len(title))//2
     b=bytearray()
     labels={}
     rel=[]
     abs_refs=[]
     def mark(name): labels[name]=len(b)
     def jr(code,name): b.extend((code,0)); rel.append((len(b)-1,name))
-    def imm16_label(name):
-        pos=len(b); b.extend((0,0)); abs_refs.append((pos,name))
-    def ld_hl_label(name): b.append(0x21); imm16_label(name)
-    def ld_de_label(name): b.append(0x11); imm16_label(name)
+    def imm16_label(name,addend=0):
+        pos=len(b); b.extend((0,0)); abs_refs.append((pos,name,addend))
+    def ld_hl_label(name,addend=0): b.append(0x21); imm16_label(name,addend)
+    def ld_de_label(name,addend=0): b.append(0x11); imm16_label(name,addend)
     def call_label(name): b.append(0xcd); imm16_label(name)
     def jp_label(name): b.append(0xc3); imm16_label(name)
     _skip=[0]
@@ -152,7 +160,7 @@ def player(data_address, initial_visual=1):
     b+=op(0x3e,1)+ld_mem_a(PLAYING)
     b+=op(0x21,0,0)+ld_mem_hl(WAIT)
     b+=op(0x3e,initial_visual)+ld_mem_a(VISUAL_MODE)
-    b+=op(0xaf)+ld_mem_a(VISUAL_LAST)+ld_mem_a(VISUAL_PHASE)
+    b+=op(0xaf)+ld_mem_a(VISUAL_LAST)+ld_mem_a(VISUAL_PHASE)+ld_mem_a(DEMO_FRAME)
     b+=op(0x3e,0xff)+ld_mem_a(PULSE_ROW)
     call_label("attr_init")
     b+=op(0xfb,0xc9)
@@ -207,37 +215,45 @@ def player(data_address, initial_visual=1):
     mark("tick_end"); b+=op(0xc9)
     mark("finish"); b+=op(0xaf)+ld_mem_a(PLAYING)+op(0xc9)
 
-    # Visual dispatcher. Keys 1-4 select scope, volume bars, artwork pulse,
-    # and colour bars. The single keyboard half-row read is adapted from the
-    # approach used by Dean Belfield's MIT-licensed lib-spectrum keyboard
-    # module; only the 1-4 row is needed here.
+    # Visual dispatcher. Keys 1-5 select scope, volume bars, artwork pulse,
+    # colour bars and a title/bouncing-balls demo. The single keyboard
+    # half-row read is adapted from the approach used by Dean Belfield's
+    # MIT-licensed lib-spectrum keyboard module; only the 1-5 row is needed.
     mark("visual_draw")
-    call_label("keyboard_1_4")
+    call_label("keyboard_1_5")
     b+=ld_a_mem(VISUAL_MODE)+op(0x47) # B=requested mode
     b+=ld_a_mem(VISUAL_LAST)+op(0xb8) # CP B
     jr(0x28,"visual_dispatch")
     b+=op(0xfe,3); jr(0x20,"visual_no_pulse_cleanup")
     call_label("pulse_clear")
     mark("visual_no_pulse_cleanup")
+    b+=ld_a_mem(VISUAL_LAST)+op(0xfe,5); jr(0x20,"visual_no_demo_cleanup")
+    call_label("demo_clear")
+    mark("visual_no_demo_cleanup")
     b+=ld_a_mem(VISUAL_MODE)+ld_mem_a(VISUAL_LAST)
     b+=op(0x3e,0xff)+ld_mem_a(PULSE_ROW)
     call_label("visual_clear")
+    b+=ld_a_mem(VISUAL_MODE)+op(0xfe,5); jr(0x20,"visual_dispatch")
+    call_label("demo_enter")
     mark("visual_dispatch")
     b+=ld_a_mem(VISUAL_MODE)+op(0xfe,1); jr_far(0x28,"scope_draw")
     b+=op(0xfe,2); jr_far(0x28,"bars_draw")
     b+=op(0xfe,3); jr_far(0x28,"pulse_draw")
-    jp_label("colour_draw")
+    b+=op(0xfe,4); jr_far(0x28,"colour_draw")
+    jp_label("demo_draw")
 
-    mark("keyboard_1_4")
-    b+=op(0x01)+word(0xf7fe)+op(0xed,0x78,0x2f,0xe6,0x0f,0xc8)
+    mark("keyboard_1_5")
+    b+=op(0x01)+word(0xf7fe)+op(0xed,0x78,0x2f,0xe6,0x1f,0xc8)
     b+=op(0xcb,0x47); jr(0x28,"key_test_2") # BIT 0,A / key 1
     b+=op(0x3e,1)+ld_mem_a(VISUAL_MODE)+op(0xc9)
     mark("key_test_2"); b+=op(0xcb,0x4f); jr(0x28,"key_test_3")
     b+=op(0x3e,2)+ld_mem_a(VISUAL_MODE)+op(0xc9)
     mark("key_test_3"); b+=op(0xcb,0x57); jr(0x28,"key_test_4")
     b+=op(0x3e,3)+ld_mem_a(VISUAL_MODE)+op(0xc9)
-    mark("key_test_4"); b+=op(0xcb,0x5f,0xc8)
+    mark("key_test_4"); b+=op(0xcb,0x5f); jr(0x28,"key_test_5")
     b+=op(0x3e,4)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+    mark("key_test_5"); b+=op(0xcb,0x67,0xc8)
+    b+=op(0x3e,5)+ld_mem_a(VISUAL_MODE)+op(0xc9)
 
     # Toggle BRIGHT on one attribute row. XOR makes this reversible even when
     # the source artwork already used bright colours.
@@ -355,6 +371,102 @@ def player(data_address, initial_visual=1):
     jr(0x10,"colour_attr_loop")
     b+=op(0xc9)
 
+    # --- Demo mode: title card and three bouncing XOR bubbles -------------
+    # lib-spectrum includes a complete filled-vector 3D cube demo and a
+    # sprite demo. The original 3D renderer continuously clears and copies a
+    # 6144-byte buffer at 0xE000, which collides with this player's pageable
+    # music data. This small, frame-based adaptation borrows the demo spirit
+    # without copying those routines: an artwork-safe title card and one XOR
+    # bubble per AY channel, animated at 25 Hz while playback stays at 50 Hz.
+    mark("demo_enter")
+    # Save the top character row (256 bitmap bytes plus 32 attributes), then
+    # replace it with a high-contrast title bar. This is restored byte-for-
+    # byte when another visual mode is selected.
+    for line in range(8):
+        b+=ld_hl(screen_addr(line)); ld_de_label("title_backup",line*32)
+        b+=op(0x01)+word(32)+op(0xed,0xb0)
+    b+=ld_hl(0x5800); ld_de_label("title_attr_backup")
+    b+=op(0x01)+word(32)+op(0xed,0xb0)
+    for line in range(8):
+        ld_hl_label("zero32")
+        b+=op(0x11)+word(screen_addr(line))+op(0x01)+word(32)+op(0xed,0xb0)
+    b+=ld_hl(0x5800)+op(0x3e,0x47,0x77)+op(0x11)+word(0x5801)
+    b+=op(0x01)+word(31)+op(0xed,0xb0)
+    # ROM-font title, centred and capped at 30 characters.
+    for x,ch in enumerate(title,title_x):
+        b+=op(0x11)+word(0x3c00+(ord(ch)-32)*8)
+        b+=ld_hl(screen_addr(0,x))+op(0x06,8)
+        mark(f"title_char_{x}")
+        b+=op(0x1a,0x77,0x13,0x24); jr(0x10,f"title_char_{x}")
+    # Deterministic starting positions keep all bubbles below the title.
+    for addr,state in zip(BALL_STATES,((1,3,1,1),(29,8,0xff,1),(12,17,1,0xff))):
+        for offset,value in enumerate(state):
+            b+=op(0x3e,value)+ld_mem_a(addr+offset)
+        b+=op(0xdd,0x21)+word(addr); call_label("ball_xor_ix")
+    b+=op(0xaf)+ld_mem_a(DEMO_FRAME)+op(0xc9)
+
+    mark("demo_clear")
+    # Erase the XOR bubbles first, then put back the exact artwork/title row.
+    for addr in BALL_STATES:
+        b+=op(0xdd,0x21)+word(addr); call_label("ball_xor_ix")
+    for line in range(8):
+        ld_hl_label("title_backup")
+        # Advance HL to this row's saved 32-byte slice.
+        if line:
+            b+=op(0x11)+word(line*32)+op(0x19)
+        b+=op(0x11)+word(screen_addr(line))+op(0x01)+word(32)+op(0xed,0xb0)
+    ld_hl_label("title_attr_backup")
+    b+=op(0x11)+word(0x5800)+op(0x01)+word(32)+op(0xed,0xb0,0xc9)
+
+    mark("demo_draw")
+    # Move on alternate ticks: smooth enough for a 1980s demo, with generous
+    # time left for dense AY register frames and bank transitions.
+    b+=ld_a_mem(DEMO_FRAME)+op(0xee,1)+ld_mem_a(DEMO_FRAME)+op(0xb7,0xc0)
+    for addr in BALL_STATES:
+        b+=op(0xdd,0x21)+word(addr); call_label("ball_step")
+    b+=op(0xc9)
+
+    mark("ball_step")
+    call_label("ball_xor_ix") # erase old position
+    # X += DX, bounce within columns 0..30 (the ball is two bytes wide).
+    b+=op(0xdd,0x7e,0,0xdd,0x86,2,0xfe,31); jr(0x38,"ball_x_ok")
+    b+=op(0xfe,0x80); jr(0x30,"ball_x_left")
+    b+=op(0x3e,29,0xdd,0x36,2,0xff); jr(0x18,"ball_x_ok")
+    mark("ball_x_left"); b+=op(0x3e,1,0xdd,0x36,2,1)
+    mark("ball_x_ok"); b+=op(0xdd,0x77,0)
+    # Y += DY, bounce within rows 2..18 (the ball is two rows high).
+    b+=op(0xdd,0x7e,1,0xdd,0x86,3,0xfe,19); jr(0x38,"ball_y_check_top")
+    b+=op(0xfe,0x80); jr(0x30,"ball_y_top")
+    b+=op(0x3e,17,0xdd,0x36,3,0xff); jr(0x18,"ball_y_ok")
+    mark("ball_y_check_top"); b+=op(0xfe,2); jr(0x30,"ball_y_ok")
+    mark("ball_y_top"); b+=op(0x3e,3,0xdd,0x36,3,1)
+    mark("ball_y_ok"); b+=op(0xdd,0x77,1)
+    jp_label("ball_xor_ix") # draw new position and return to caller
+
+    mark("ball_xor_ix")
+    # Convert character-row Y through a compact address table, add byte X,
+    # then XOR a chunky 16x16 bubble in two eight-line halves.
+    ld_de_label("ball_sprite")
+    for half in range(2):
+        b+=op(0xd5,0xdd,0x7e,1)
+        if half: b+=op(0x3c)
+        b+=op(0x87,0x26,0,0x6f,0xe5)
+        ld_hl_label("ball_row_table"); b+=op(0xd1,0x19,0x5e,0x23,0x56,0xeb)
+        b+=op(0xdd,0x7e,0,0x85,0x6f,0xd1,0x06,8)
+        mark(f"ball_xor_loop_{half}")
+        b+=op(0x1a,0xae,0x77,0x13,0x23,0x1a,0xae,0x77,0x13,0x2b,0x24)
+        jr(0x10,f"ball_xor_loop_{half}")
+    # Toggle BRIGHT and the three PAPER bits in the corresponding 2x2
+    # attribute cells. The colour block makes the bubbles readable over busy
+    # cover art, and XOR means the original attributes still restore exactly.
+    b+=op(0xdd,0x7e,1,0x87,0x26,0,0x6f,0xe5)
+    ld_hl_label("ball_attr_table"); b+=op(0xd1,0x19,0x5e,0x23,0x56,0xeb)
+    b+=op(0xdd,0x7e,0,0x85,0x6f,0x06,2)
+    mark("ball_attr_loop")
+    b+=op(0x7e,0xee,0x78,0x77,0x23,0x7e,0xee,0x78,0x77)
+    b+=op(0x11)+word(31)+op(0x19); jr(0x10,"ball_attr_loop")
+    b+=op(0xc9)
+
     while len(b)<BANK_RESET_OFFSET: b.append(0)
     mark("bank_reset")
     b+=op(0xaf)+ld_mem_a(BANK_STATE); jp_label("bank_next")
@@ -399,14 +511,27 @@ def player(data_address, initial_visual=1):
     mark("bar_table"); b+=BAR_TABLE
     mark("full32"); b+=FULL32
     mark("zero32"); b+=bytes(32)
+    mark("ball_row_table")
+    for row in range(20): b+=word(screen_addr(row*8))
+    mark("ball_attr_table")
+    for row in range(20): b+=word(0x5800+row*32)
+    mark("ball_sprite")
+    b+=bytes((
+        0x07,0xe0, 0x1f,0xf8, 0x3f,0xfc, 0x7f,0xfe,
+        0x7c,0x7e, 0xf8,0x3f, 0xf8,0x3f, 0xfc,0x7f,
+        0xfc,0x7f, 0xfe,0xff, 0x7f,0xfe, 0x7f,0xfe,
+        0x3f,0xfc, 0x1f,0xf8, 0x07,0xe0, 0x00,0x00,
+    ))
+    mark("title_backup"); b+=bytes(8*32)
+    mark("title_attr_backup"); b+=bytes(32)
 
     for pos,name in rel:
         target=labels[name]
         delta=target-(pos+1)
         if not -128<=delta<=127: raise ValueError("relative jump out of range")
         b[pos]=delta&255
-    for pos,name in abs_refs:
-        target=BASE+labels[name]
+    for pos,name,addend in abs_refs:
+        target=BASE+labels[name]+addend
         b[pos]=target&255; b[pos+1]=(target>>8)&255
     return bytes(b)
 
@@ -543,15 +668,15 @@ def tap(name, code_chunks, screen=None):
 def build(ay_path,out_path,name=None,image_path=None,visual="scope"):
     name=name or Path(out_path).stem
     if visual not in VISUAL_IDS:
-        raise ValueError("visual must be scope, bars, pulse or colour")
+        raise ValueError("visual must be scope, bars, pulse, colour or demo")
     initial_visual=VISUAL_IDS[visual]
     raw=Path(ay_path).read_bytes()
     frames=[raw[i:i+14] for i in range(0,len(raw)-1,14) if len(raw[i:i+14])==14]
     events=compress(frames)
-    player_len=len(player(0,initial_visual))
+    player_len=len(player(0,initial_visual,name))
     data_address=BASE+((player_len+0xff)//0x100)*0x100
     chunks=split_events(events, BANK_LOAD_ADDR-data_address)
-    code0=bytearray(player(data_address,initial_visual))
+    code0=bytearray(player(data_address,initial_visual,name))
     code0.extend(b"\0"*(data_address-(BASE+len(code0))))
     code0.extend(chunks[0])
     if len(chunks)>1 and len(code0)!=BANK_LOAD_ADDR-BASE:
