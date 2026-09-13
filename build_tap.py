@@ -245,9 +245,9 @@ def player(data_address):
     while len(b)<BANK_NEXT_OFFSET: b.append(0)
     mark("bank_next")
     b+=ld_a_mem(BANK_STATE)+op(0x3c)
-    # Banks 2 and 5 are already permanently mapped at 8000 and 4000.
-    # Paging either at C000 and loading data would overwrite the player or
-    # display respectively, so the usable sequence is 1,3,4,6,7.
+    # Banks 2 and 5 are permanently mapped at 0x8000 and 0x4000 on a 128K
+    # Spectrum. Paging either at 0xc000 aliases and overwrites the fixed
+    # player or the screen, so use the safe sequence 1, 3, 4, 6, 7.
     b+=op(0xfe,0x02,0x20,0x01,0x3c) # CP 2; JR NZ,+1; INC A
     b+=op(0xfe,0x05,0x20,0x01,0x3c) # CP 5; JR NZ,+1; INC A
     b+=ld_mem_a(BANK_STATE)
@@ -334,7 +334,7 @@ def float5(n):
     return bytes((e+128,))+mant.to_bytes(4,"big")
 
 TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2,"CLEAR":0xfd}
-def basic_loader(name="POPCORN", has_image=False, bank_count=0,
+def basic_loader(name="MUSIC", has_image=False, bank_count=0,
                  bank_reset_address=BASE+BANK_RESET_OFFSET,
                  bank_next_address=BASE+BANK_NEXT_OFFSET):
     def num(n): return str(n).encode()+b"\x0e"+float5(n)
@@ -353,14 +353,16 @@ def basic_loader(name="POPCORN", has_image=False, bank_count=0,
         bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
     bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
     if bank_count:
-        # bank_reset pages bank 1 but does not load into it - without this
-        # LOAD, bank 1 never receives any data and every later chunk loads
-        # one bank off from where the player expects to find it.
         bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_reset_address))
         bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
         for _ in range(1,bank_count):
             bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_next_address))
             bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
+    # ROM loading messages are drawn over an already-loaded picture. Load the
+    # same screen once more after all code blocks so its own data erases the
+    # final "Bytes:" message before playback begins.
+    if has_image:
+        bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
     bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(BASE))
     for no,body in enumerate(bodies, start=1):
         body=body+b"\r"; lines.append(struct.pack(">H",no*10)+struct.pack("<H",len(body))+body)
@@ -379,10 +381,11 @@ def block(payload):
 SCREEN_ADDR=16384
 SCREEN_LEN=6912
 def tap(name, code_chunks, screen=None):
+    name="".join(ch if 32<=ord(ch)<127 else "_" for ch in str(name).upper())[:10] or "MUSIC"
     if not code_chunks:
         raise ValueError("at least one code chunk is required")
     if len(code_chunks)>6:
-        raise ValueError("128K TAP supports at most five extra bank chunks")
+        raise ValueError("128K TAP supports at most five safe bank chunks")
     basic=basic_loader(name, has_image=screen is not None,
                        bank_count=len(code_chunks)-1)
     def header(kind,length,param1,param2):
@@ -397,9 +400,14 @@ def tap(name, code_chunks, screen=None):
         limit=0x10000-BASE if index==0 else BANK_SIZE
         if len(code)>limit: raise ValueError("code chunk is too large")
         result+=block(header(3,len(code),address,len(code))); result+=block(b"\xff"+code)
+    # Match the final SCREEN$ in the loader. This costs 6912 bytes on tape but
+    # leaves pristine artwork instead of ROM status text when playback starts.
+    if screen is not None:
+        result+=block(header(3,len(screen),SCREEN_ADDR,len(screen))); result+=block(b"\xff"+screen)
     return bytes(result)
 
-def build(ay_path,out_path,name="POPCORN",image_path=None):
+def build(ay_path,out_path,name=None,image_path=None):
+    name=name or Path(out_path).stem
     raw=Path(ay_path).read_bytes()
     frames=[raw[i:i+14] for i in range(0,len(raw)-1,14) if len(raw[i:i+14])==14]
     events=compress(frames)
@@ -428,5 +436,6 @@ def build(ay_path,out_path,name="POPCORN",image_path=None):
 if __name__=="__main__":
     import argparse
     p=argparse.ArgumentParser(); p.add_argument("ay"); p.add_argument("tap")
+    p.add_argument("--name", help="Spectrum tape name (defaults to output filename)")
     p.add_argument("--image", help="PNG/JPG artwork to show before playback")
-    a=p.parse_args(); build(a.ay,a.tap,image_path=a.image)
+    a=p.parse_args(); build(a.ay,a.tap,name=a.name,image_path=a.image)
