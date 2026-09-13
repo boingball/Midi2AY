@@ -321,7 +321,7 @@ def float5(n):
     mant=round((n/(1<<(e-1))-1)*(1<<31))
     return bytes((e+128,))+mant.to_bytes(4,"big")
 
-TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2}
+TOK={"LOAD":0xef,"CODE":0xaf,"RANDOMIZE":0xf9,"USR":0xc0,"SCREEN$":0xaa,"PAUSE":0xf2,"CLEAR":0xfd}
 def basic_loader(name="POPCORN", has_image=False, bank_count=0,
                  bank_reset_address=BASE+BANK_RESET_OFFSET,
                  bank_next_address=BASE+BANK_NEXT_OFFSET):
@@ -329,6 +329,9 @@ def basic_loader(name="POPCORN", has_image=False, bank_count=0,
     lines=[]
     filename=name[:10].encode("ascii")
     bodies=[]
+    # Keep the BASIC stack below C000 before the loader pages RAM banks.
+    # Without this, a bank switch can corrupt the BASIC return stack.
+    bodies.append(bytes((TOK["CLEAR"],))+b" "+num(32767))
     if has_image:
         # SCREEN$ is just CODE 16384 with the length implied; the ROM streams
         # the picture into the display file live as it loads, then straight
