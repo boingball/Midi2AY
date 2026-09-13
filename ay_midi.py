@@ -72,7 +72,69 @@ def family(program):
     if program in range(88,96): return "pad"
     return "tone"
 
-def frames_for(notes, division, drum_mode, tempo=500000):
+def _choose_voices(tones, lead_mode="smart", previous_lead=None, previous_middle=None):
+    """Route a polyphonic tone set to AY accompaniment, lead and bass.
+
+    Smart mode combines pitch continuity with note shape, velocity and
+    instrument family. Shorter, more expressive notes are favoured over a
+    sustained backing note that happens to remain close to the old pitch.
+    This matters for merged arrangements such as Popcorn, where the chorus
+    lead sits over a long strings part.
+    """
+    by_pitch = {}
+    for note in tones:
+        current = by_pitch.get(note.pitch)
+        if current is None or note.velocity > current.velocity:
+            by_pitch[note.pitch] = note
+    pitches = sorted(by_pitch)
+    if not pitches:
+        return [None, None, None], None, None
+
+    bass_pitch = pitches[0]
+    bass = by_pitch[bass_pitch]
+    lead_candidates = pitches[1:] or pitches
+
+    if lead_mode == "top":
+        lead_pitch = lead_candidates[-1]
+    elif lead_mode == "middle":
+        lead_pitch = lead_candidates[(len(lead_candidates) - 1) // 2]
+    elif lead_mode == "smart":
+        def lead_score(pitch):
+            note = by_pitch[pitch]
+            family_bonus = {
+                "lead": 500,
+                "brass": 220,
+                "strings": 100,
+                "tone": 0,
+                "pad": -180,
+                "bass": -100,
+            }.get(family(note.program), 0)
+            # A short note is more likely to be the melody than a held pad or
+            # strings note. Cap this term so continuity still matters.
+            short_note_bonus = 2 * max(0, 300 - min(300, note.end - note.start))
+            continuity = -3 * abs(pitch - previous_lead) if previous_lead is not None else 0
+            return family_bonus + short_note_bonus + note.velocity + continuity
+
+        lead_pitch = max(lead_candidates, key=lead_score)
+    else:
+        raise ValueError("lead mode must be smart, top or middle")
+
+    lead = by_pitch[lead_pitch]
+    middle_candidates = [pitch for pitch in pitches if pitch not in {bass_pitch, lead_pitch}]
+    if not middle_candidates:
+        middle = lead
+        middle_pitch = lead_pitch
+    elif previous_middle in middle_candidates:
+        middle_pitch = previous_middle
+        middle = by_pitch[middle_pitch]
+    else:
+        middle_pitch = middle_candidates[-1]
+        middle = by_pitch[middle_pitch]
+
+    return [middle, lead, bass], lead_pitch, middle_pitch
+
+
+def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart"):
     if notes is None: return b"",tempo
     end=max(n.end for n in notes)
     # MIDI ticks per second = division * 1_000_000 / tempo (microseconds per
@@ -84,23 +146,21 @@ def frames_for(notes, division, drum_mode, tempo=500000):
     step=max(1,round(division*1000000/(tempo*50)))
     total=max(1,math.ceil((end+step)/step))
     out=bytearray()
+    previous_lead = None
+    previous_middle = None
     for frame in range(total):
         a=frame*step; b=a+step
         live=[n for n in notes if n.start<b and n.end>a]
         drums=[n for n in live if n.channel==9] if drum_mode!="off" else []
         tones=[n for n in live if n.channel!=9]
-        tones.sort(key=lambda n:(n.pitch,n.velocity),reverse=True)
-        # Lead, accompaniment, bass: preserve the musically useful extremes.
-        chosen=[]
-        for n in sorted(tones,key=lambda x:x.pitch,reverse=True):
-            if all(n.pitch!=x.pitch for x in chosen): chosen.append(n)
-        lead=chosen[0] if chosen else None
-        bass=min(tones,key=lambda n:n.pitch) if tones else None
-        middle=None
-        for n in chosen:
-            if n is not lead and n is not bass: middle=n; break
-        if middle is None: middle=lead if lead is not None and lead is not bass else None
-        voices=[middle,lead,bass]
+        voices, selected_lead, selected_middle = _choose_voices(tones, lead_mode, previous_lead, previous_middle)
+        middle, lead, bass = voices
+        if tones:
+            previous_lead = selected_lead
+            previous_middle = selected_middle
+        else:
+            previous_lead = None
+            previous_middle = None
         regs=[0]*14; mixer=63
         for i,n in enumerate(voices):
             if n is not None:
@@ -128,15 +188,16 @@ def frames_for(notes, division, drum_mode, tempo=500000):
     out.append(255)
     return bytes(out), round(60000000/(tempo if tempo else 500000))
 
-def compile_ay(input_path, output_path, drum_mode="off"):
+def compile_ay(input_path, output_path, drum_mode="off", lead_mode="smart"):
     division,notes,tempos=read_midi(input_path)
     tempo=tempos[0][1] if tempos else 500000
-    frames,_=frames_for(notes,division,drum_mode,tempo)
+    frames,_=frames_for(notes,division,drum_mode,tempo,lead_mode)
     Path(output_path).write_bytes(frames)
-    print(f"wrote {output_path} ({len(frames)} bytes, {len(frames)//14} AY frames, drums={drum_mode})")
+    print(f"wrote {output_path} ({len(frames)} bytes, {len(frames)//14} AY frames, drums={drum_mode}, lead={lead_mode})")
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
     p.add_argument("midi",type=Path); p.add_argument("output",type=Path)
     p.add_argument("--drums",choices=("off","noise","hybrid"),default="off")
-    a=p.parse_args(); compile_ay(a.midi,a.output,a.drums)
+    p.add_argument("--lead-mode",choices=("smart","top","middle"),default="smart")
+    a=p.parse_args(); compile_ay(a.midi,a.output,a.drums,a.lead_mode)
