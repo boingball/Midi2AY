@@ -29,6 +29,17 @@ def player(data_address):
     def mark(name): labels[name]=len(b)
     def jr(code,name): b.extend((code,0)); rel.append((len(b)-1,name))
     mark("start")
+    # 128 BASIC leaves ROM 1 paged in with interrupt mode 2 active. ROM 1's
+    # interrupt handler pages RAM banks in and out of 0xC000-0xFFFF for its
+    # own housekeeping, which collides with the event data we load into that
+    # same range and leaves interrupts permanently disabled after the first
+    # tick (CPU parked on the HALT below forever). Page in ROM 0 and force
+    # IM 1 so the plain, non-paging 0x0038 handler is used instead.
+    b+=op(0xf3) # DI while we repoint ROM/paging and interrupt mode
+    b+=op(0x3e,0x00) # LD A,0 (ROM 0, RAM bank 0, normal screen, paging enabled)
+    b+=op(0x01)+word(0x7ffd) # LD BC,0x7ffd
+    b+=op(0xed,0x79) # OUT (C),A
+    b+=op(0xed,0x56) # IM 1
     b+=op(0xcd)+word(BASE+0x20) # init
     mark("main"); b+=op(0x76) # HALT, 50 Hz ROM interrupt
     # Keep the tick entry point clear of the init routine.  Init now contains
