@@ -121,3 +121,25 @@ Example:
 ```
 python3 midi2ay.py "No Surprises.mid" no_surprises.tap --mode tap --drums hybrid --lead-mode smart --image cover.jpg
 ```
+
+
+## PR7 live visual effects
+
+TAP mode includes four visualisers that can be changed while the music is playing:
+
+| Key | Mode | Effect |
+| ---: | --- | --- |
+| 1 | Scope | Three pitch-reactive oscilloscope traces |
+| 2 | Bars | Cyan, yellow and magenta AY channel volume bars |
+| 3 | Pulse | Music-reactive border with a reversible BRIGHT sweep over the artwork |
+| 4 | Colour | Animated Spectrum colour bars in the visual strip |
+
+Choose the initial mode with `--visual`; keys 1-4 remain active regardless of the initial selection:
+
+```
+python3 midi2ay.py song.mid song.tap --mode tap --image cover.png --visual bars
+```
+
+The effects run once per 50 Hz player tick. They preserve the banked event stream and artwork backup, and avoid the cycle-timed full-screen raster approach that would interfere with AY timing.
+
+The keyboard-row scanning and colour-table approach are adapted from ideas and routines in Dean Belfield's MIT-licensed [lib-spectrum](https://github.com/breakintoprogram/lib-spectrum). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and licence text.
