@@ -299,7 +299,7 @@ def main() -> None:
         from build_tap import build
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".ay") as temp:
-            compile_ay(args.midi, temp.name, args.drums)
+            compile_ay(args.midi, temp.name, args.drums, args.lead_mode)
             build(temp.name, args.output, (args.title or args.midi.stem).upper(), image_path=args.image)
     else:
         convert(args.midi, args.output, args.title or args.midi.stem, args.lead_mode)
