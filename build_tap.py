@@ -147,8 +147,8 @@ def player(data_address):
     mark("process"); b+=ld_hl_mem(PTR)
     b+=op(0x5e,0x23,0x56,0x23)
     # FF FE is a bank transition marker; it cannot be a valid 14-bit mask.
-    b+=op(0x7a,0xfe,0xff); jr_far(0x20,"not_bank_marker")
-    b+=op(0x7b,0xfe,0xfe); jr_far(0x20,"not_bank_marker")
+    b+=op(0x7b,0xfe,0xff); jr_far(0x20,"not_bank_marker")
+    b+=op(0x7a,0xfe,0xfe); jr_far(0x20,"not_bank_marker")
     call_label("bank_next")
     b+=ld_hl(0xc000)+ld_mem_hl(PTR)
     jp_label("process")
