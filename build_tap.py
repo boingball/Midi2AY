@@ -245,6 +245,10 @@ def player(data_address):
     while len(b)<BANK_NEXT_OFFSET: b.append(0)
     mark("bank_next")
     b+=ld_a_mem(BANK_STATE)+op(0x3c,0xe6,0x07)+ld_mem_a(BANK_STATE)
+    # Preserve BANK_M bits 3-7 while replacing only RAM-bank bits 0-2.
+    # This is essential while called from 128 BASIC: clearing bit 4 would
+    # page ROM 0 over ROM 1 before RET, so BASIC resumes in the wrong ROM.
+    b+=op(0x5f)+ld_a_mem(0x5b5c)+op(0xe6,0xf8,0xb3)
     b+=ld_mem_a(0x5b5c)+op(0x01)+word(0x7ffd)+op(0xed,0x79)+op(0xc9)
 
     mark("reg_to_slot"); b+=REG_TO_SLOT
