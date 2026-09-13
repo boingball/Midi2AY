@@ -21,6 +21,17 @@ PER_A,PER_B,PER_C,VOL_A,VOL_B,VOL_C=range(32610,32616)
 PHASE_A,PHASE_B,PHASE_C=range(32616,32619)
 # Banked TAP support for long event streams.
 BANK_STATE=32619
+VISUAL_MODE=32620
+VISUAL_LAST=32621
+VISUAL_PHASE=32622
+PULSE_ROW=32623
+DEMO_FRAME=32624
+# Four bytes per bouncing ball: character-column X, character-row Y, signed
+# X velocity and signed Y velocity.  Character-aligned movement keeps the
+# XOR sprite tiny and, crucially, lets it erase itself without another
+# screen-sized backing buffer competing with the banked music stream.
+BALL_STATES=(32625,32629,32633)
+TICK_OFFSET=0x60
 BANK_RESET_OFFSET=0x1800
 BANK_NEXT_OFFSET=0x1810
 SCREEN_BACKUP_OFFSET=0x1840
@@ -81,22 +92,65 @@ def wave_picture(phase):
         rows[y][x//8] |= 0x80 >> (x%8)
     return b"".join(bytes(r) for r in rows)
 WAVE_TABLE=b"".join(wave_picture(p) for p in range(WAVE_PHASES))
+BAR_TABLE=b"".join(bytes((0xff,))*(level*2)+bytes(32-level*2) for level in range(16))
+FULL32=bytes((0xff,))*32
 
 # Maps AY register index (0-13) to a slot in the 6-byte shadow area above
 # (PER_A..VOL_C), or 0xff for registers the scope doesn't track.
 REG_TO_SLOT=bytes((0,0xff,1,0xff,2,0xff,0xff,0xff,3,4,5,0xff,0xff,0xff))
+VISUAL_IDS={"scope":1,"bars":2,"pulse":3,"colour":4,"demo":5}
 
-def player(data_address):
+# Small self-contained 5x7 font for mode 5.  The 128K machine has two ROMs,
+# and the player deliberately selects the ROM whose 0x3c00 area is not the
+# 48K character set.  Embedding only the glyphs used by the title is both
+# safer than paging ROMs mid-song and smaller than carrying a full font.
+FONT_5X7={
+    " ":(0,0,0,0,0,0,0), "!":(4,4,4,4,4,0,4),
+    "'":(4,4,0,0,0,0,0), "(":(2,4,8,8,8,4,2),
+    ")":(8,4,2,2,2,4,8), "+":(0,4,4,31,4,4,0),
+    ",":(0,0,0,0,0,4,8), "-":(0,0,0,31,0,0,0),
+    ".":(0,0,0,0,0,0,4), "/":(1,2,2,4,8,8,16),
+    "0":(14,17,19,21,25,17,14), "1":(4,12,4,4,4,4,14),
+    "2":(14,17,1,2,4,8,31), "3":(30,1,1,14,1,1,30),
+    "4":(2,6,10,18,31,2,2), "5":(31,16,16,30,1,1,30),
+    "6":(14,16,16,30,17,17,14), "7":(31,1,2,4,8,8,8),
+    "8":(14,17,17,14,17,17,14), "9":(14,17,17,15,1,1,14),
+    ":":(0,4,0,0,0,4,0), "?":(14,17,1,2,4,0,4),
+    "A":(14,17,17,31,17,17,17), "B":(30,17,17,30,17,17,30),
+    "C":(14,17,16,16,16,17,14), "D":(30,17,17,17,17,17,30),
+    "E":(31,16,16,30,16,16,31), "F":(31,16,16,30,16,16,16),
+    "G":(14,17,16,23,17,17,15), "H":(17,17,17,31,17,17,17),
+    "I":(14,4,4,4,4,4,14), "J":(7,2,2,2,18,18,12),
+    "K":(17,18,20,24,20,18,17), "L":(16,16,16,16,16,16,31),
+    "M":(17,27,21,21,17,17,17), "N":(17,25,21,19,17,17,17),
+    "O":(14,17,17,17,17,17,14), "P":(30,17,17,30,16,16,16),
+    "Q":(14,17,17,17,21,18,13), "R":(30,17,17,30,20,18,17),
+    "S":(15,16,16,14,1,1,30), "T":(31,4,4,4,4,4,4),
+    "U":(17,17,17,17,17,17,14), "V":(17,17,17,17,17,10,4),
+    "W":(17,17,17,21,21,21,10), "X":(17,17,10,4,10,17,17),
+    "Y":(17,17,10,4,4,4,4), "Z":(31,1,2,4,8,16,31),
+    "_":(0,0,0,0,0,0,31),
+}
+
+def title_glyph(ch):
+    return bytes((0,*(row<<1 for row in FONT_5X7.get(ch,FONT_5X7["?"]))))
+
+def player(data_address, initial_visual=1, title="MUSIC"):
+    if initial_visual not in VISUAL_IDS.values():
+        raise ValueError("initial visual mode must be 1-5")
+    title="".join(ch if 32<=ord(ch)<127 else "_" for ch in str(title).upper())[:30] or "MUSIC"
+    title_x=(32-len(title))//2
+    title_glyph_data=b"".join(title_glyph(ch) for ch in title)
     b=bytearray()
     labels={}
     rel=[]
     abs_refs=[]
     def mark(name): labels[name]=len(b)
     def jr(code,name): b.extend((code,0)); rel.append((len(b)-1,name))
-    def imm16_label(name):
-        pos=len(b); b.extend((0,0)); abs_refs.append((pos,name))
-    def ld_hl_label(name): b.append(0x21); imm16_label(name)
-    def ld_de_label(name): b.append(0x11); imm16_label(name)
+    def imm16_label(name,addend=0):
+        pos=len(b); b.extend((0,0)); abs_refs.append((pos,name,addend))
+    def ld_hl_label(name,addend=0): b.append(0x21); imm16_label(name,addend)
+    def ld_de_label(name,addend=0): b.append(0x11); imm16_label(name,addend)
     def call_label(name): b.append(0xcd); imm16_label(name)
     def jp_label(name): b.append(0xc3); imm16_label(name)
     _skip=[0]
@@ -132,9 +186,8 @@ def player(data_address):
     b+=op(0xed,0x56) # IM 1
     b+=op(0xcd)+word(BASE+0x22) # init
     mark("main"); b+=op(0x76) # HALT, 50 Hz ROM interrupt
-    # Keep the tick entry point clear of the init routine.  Init now contains
-    # EI, so it is longer than the original 0x30-byte slot.
-    b+=op(0xcd)+word(BASE+0x40)
+    # Keep the tick entry point clear of the expanded visual-mode init state.
+    b+=op(0xcd)+word(BASE+TICK_OFFSET)
     b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x20,"main")
     mark("stopped"); b+=op(0xf3,0x76) # stop safely; BASIC stack was replaced for bank paging
     while len(b)<0x22: b.append(0)
@@ -142,14 +195,17 @@ def player(data_address):
     b+=op(0xaf)+ld_mem_a(PLAYING)
     b+=op(0x3e,1)+ld_mem_a(PLAYING)
     b+=op(0x21,0,0)+ld_mem_hl(WAIT)
+    b+=op(0x3e,initial_visual)+ld_mem_a(VISUAL_MODE)
+    b+=op(0xaf)+ld_mem_a(VISUAL_LAST)+ld_mem_a(VISUAL_PHASE)+ld_mem_a(DEMO_FRAME)
+    b+=op(0x3e,0xff)+ld_mem_a(PULSE_ROW)
     call_label("attr_init")
     b+=op(0xfb,0xc9)
-    while len(b)<0x40: b.append(0)
+    while len(b)<TICK_OFFSET: b.append(0)
     mark("tick"); b+=ld_a_mem(PLAYING)+op(0xb7); jr_far(0x28,"tick_end")
     # Animate the scope every tick, not just on ticks with a register change -
     # its phase counters need to keep advancing even while WAIT is counting
     # down, or the trace would visibly stall between events.
-    call_label("scope_draw")
+    call_label("visual_draw")
     b+=ld_hl_mem(WAIT)+op(0x7c,0xb5); jr(0x28,"process")
     b+=op(0x2b)+ld_mem_hl(WAIT)+op(0xc9)
     mark("process"); b+=ld_hl_mem(PTR)
@@ -194,6 +250,71 @@ def player(data_address):
     jr(0x18,"finish")
     mark("tick_end"); b+=op(0xc9)
     mark("finish"); b+=op(0xaf)+ld_mem_a(PLAYING)+op(0xc9)
+
+    # Visual dispatcher. Keys 1-5 select scope, volume bars, artwork pulse,
+    # colour bars and a title/bouncing-balls demo. The single keyboard
+    # half-row read is adapted from the approach used by Dean Belfield's
+    # MIT-licensed lib-spectrum keyboard module; only the 1-5 row is needed.
+    mark("visual_draw")
+    call_label("keyboard_1_5")
+    b+=ld_a_mem(VISUAL_MODE)+op(0x47) # B=requested mode
+    b+=ld_a_mem(VISUAL_LAST)+op(0xb8) # CP B
+    jr(0x28,"visual_dispatch")
+    b+=op(0xfe,3); jr(0x20,"visual_no_pulse_cleanup")
+    call_label("pulse_clear")
+    mark("visual_no_pulse_cleanup")
+    b+=ld_a_mem(VISUAL_LAST)+op(0xfe,5); jr(0x20,"visual_no_demo_cleanup")
+    call_label("demo_clear")
+    mark("visual_no_demo_cleanup")
+    b+=ld_a_mem(VISUAL_MODE)+ld_mem_a(VISUAL_LAST)
+    b+=op(0x3e,0xff)+ld_mem_a(PULSE_ROW)
+    call_label("visual_clear")
+    b+=ld_a_mem(VISUAL_MODE)+op(0xfe,5); jr(0x20,"visual_dispatch")
+    call_label("demo_enter")
+    mark("visual_dispatch")
+    b+=ld_a_mem(VISUAL_MODE)+op(0xfe,1); jr_far(0x28,"scope_draw")
+    b+=op(0xfe,2); jr_far(0x28,"bars_draw")
+    b+=op(0xfe,3); jr_far(0x28,"pulse_draw")
+    b+=op(0xfe,4); jr_far(0x28,"colour_draw")
+    jp_label("demo_draw")
+
+    mark("keyboard_1_5")
+    b+=op(0x01)+word(0xf7fe)+op(0xed,0x78,0x2f,0xe6,0x1f,0xc8)
+    b+=op(0xcb,0x47); jr(0x28,"key_test_2") # BIT 0,A / key 1
+    b+=op(0x3e,1)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+    mark("key_test_2"); b+=op(0xcb,0x4f); jr(0x28,"key_test_3")
+    b+=op(0x3e,2)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+    mark("key_test_3"); b+=op(0xcb,0x57); jr(0x28,"key_test_4")
+    b+=op(0x3e,3)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+    mark("key_test_4"); b+=op(0xcb,0x5f); jr(0x28,"key_test_5")
+    b+=op(0x3e,4)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+    mark("key_test_5"); b+=op(0xcb,0x67,0xc8)
+    b+=op(0x3e,5)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+
+    # Toggle BRIGHT on one attribute row. XOR makes this reversible even when
+    # the source artwork already used bright colours.
+    mark("pulse_toggle")
+    b+=op(0x26,0,0x6f) # H=0, L=row
+    for _ in range(5): b+=op(0x29) # row * 32
+    b+=op(0x11)+word(0x5800)+op(0x19,0x06,32)
+    mark("pulse_toggle_loop")
+    b+=op(0x7e,0xee,0x40,0x77,0x23); jr(0x10,"pulse_toggle_loop")
+    b+=op(0xc9)
+
+    mark("pulse_clear")
+    b+=ld_a_mem(PULSE_ROW)+op(0xfe,0xff,0xc8)
+    call_label("pulse_toggle")
+    b+=op(0x3e,0xff)+ld_mem_a(PULSE_ROW)
+    b+=op(0xaf,0xd3,0xfe,0xc9) # black border
+
+    # Clear only the 24-pixel visual strip, preserving the cover above it.
+    mark("visual_clear")
+    for rows in CHANNEL_ROWS:
+        for addr in rows:
+            ld_hl_label("zero32")
+            b+=op(0x11)+word(addr)+op(0x01)+word(32)+op(0xed,0xb0)
+    call_label("attr_init")
+    b+=op(0xc9)
 
     # One-off: force the scope strip's attributes so the trace is always
     # visible regardless of what colour the artwork underneath it used.
@@ -243,6 +364,136 @@ def player(data_address):
         mark(f"ch_done_{ch}")
     b+=op(0xc9) # RET
 
+    # Three horizontal VU bars, one 8-pixel band per AY channel. A compact
+    # table turns each 4-bit AY volume directly into a 0-30 byte bar.
+    mark("bars_draw")
+    for ch,(vol_var,rows,attr) in enumerate(zip(
+            (VOL_A,VOL_B,VOL_C),CHANNEL_ROWS,(0x45,0x46,0x43))):
+        b+=ld_a_mem(vol_var)+op(0xe6,0x0f,0x26,0,0x6f)
+        for _ in range(5): b+=op(0x29)
+        ld_de_label("bar_table"); b+=op(0x19)
+        for addr in rows:
+            b+=op(0xe5)+op(0x11)+word(addr)+op(0x01)+word(32)+op(0xed,0xb0,0xe1)
+        attr_addr=ATTR_BASE+ch*32
+        b+=ld_hl(attr_addr)+op(0x3e,attr,0x77)+op(0x11)+word(attr_addr+1)
+        b+=op(0x01)+word(31)+op(0xed,0xb0)
+    b+=op(0xc9)
+
+    # Artwork pulse: border colour follows the combined channel volume while
+    # one reversible BRIGHT row sweeps down the untouched part of the cover.
+    mark("pulse_draw")
+    b+=ld_a_mem(VOL_A)+op(0x47)+ld_a_mem(VOL_B)+op(0x80,0x47)
+    b+=ld_a_mem(VOL_C)+op(0x80,0xe6,0x07,0xd3,0xfe)
+    b+=ld_a_mem(PULSE_ROW)+op(0xfe,0xff); jr(0x28,"pulse_first_row")
+    call_label("pulse_toggle")
+    b+=ld_a_mem(PULSE_ROW)+op(0x3c,0xfe,21); jr(0x38,"pulse_store_row")
+    b+=op(0xaf); jr(0x18,"pulse_store_row")
+    mark("pulse_first_row"); b+=op(0xaf)
+    mark("pulse_store_row"); b+=ld_mem_a(PULSE_ROW)
+    call_label("pulse_toggle")
+    b+=op(0xc9)
+
+    # Animated colour bars inspired by lib-spectrum's colour-table demo, but
+    # frame-based rather than cycle-timed so AY playback remains uninterrupted.
+    mark("colour_draw")
+    for rows in CHANNEL_ROWS:
+        for addr in rows:
+            ld_hl_label("full32")
+            b+=op(0x11)+word(addr)+op(0x01)+word(32)+op(0xed,0xb0)
+    b+=ld_a_mem(VISUAL_PHASE)+op(0x3c,0xe6,0x07)+ld_mem_a(VISUAL_PHASE)
+    b+=op(0xd3,0xfe,0x5f)+ld_hl(ATTR_BASE)+op(0x06,ATTR_LEN)
+    mark("colour_attr_loop")
+    b+=op(0x7b,0xe6,0x07,0xf6,0x40,0x77,0x23,0x1c)
+    jr(0x10,"colour_attr_loop")
+    b+=op(0xc9)
+
+    # --- Demo mode: title card and three bouncing XOR bubbles -------------
+    # lib-spectrum includes a complete filled-vector 3D cube demo and a
+    # sprite demo. The original 3D renderer continuously clears and copies a
+    # 6144-byte buffer at 0xE000, which collides with this player's pageable
+    # music data. This small, frame-based adaptation borrows the demo spirit
+    # without copying those routines: an artwork-safe title card and one XOR
+    # bubble per AY channel, animated at 25 Hz while playback stays at 50 Hz.
+    mark("demo_enter")
+    # Save the top character row (256 bitmap bytes plus 32 attributes), then
+    # replace it with a high-contrast title bar. This is restored byte-for-
+    # byte when another visual mode is selected.
+    for line in range(8):
+        b+=ld_hl(screen_addr(line)); ld_de_label("title_backup",line*32)
+        b+=op(0x01)+word(32)+op(0xed,0xb0)
+    b+=ld_hl(0x5800); ld_de_label("title_attr_backup")
+    b+=op(0x01)+word(32)+op(0xed,0xb0)
+    for line in range(8):
+        ld_hl_label("zero32")
+        b+=op(0x11)+word(screen_addr(line))+op(0x01)+word(32)+op(0xed,0xb0)
+    b+=ld_hl(0x5800)+op(0x3e,0x47,0x77)+op(0x11)+word(0x5801)
+    b+=op(0x01)+word(31)+op(0xed,0xb0)
+    # Embedded-font title, centred and capped at 30 characters.
+    for index,x in enumerate(range(title_x,title_x+len(title))):
+        ld_de_label("title_glyphs",index*8)
+        b+=ld_hl(screen_addr(0,x))+op(0x06,8)
+        mark(f"title_char_{x}")
+        b+=op(0x1a,0x77,0x13,0x24); jr(0x10,f"title_char_{x}")
+    # Deterministic starting positions keep all bubbles below the title.
+    for addr,state in zip(BALL_STATES,((1,3,1,1),(29,8,0xff,1),(12,17,1,0xff))):
+        for offset,value in enumerate(state):
+            b+=op(0x3e,value)+ld_mem_a(addr+offset)
+        b+=op(0xdd,0x21)+word(addr); call_label("ball_xor_ix")
+    b+=op(0xaf)+ld_mem_a(DEMO_FRAME)+op(0xc9)
+
+    mark("demo_clear")
+    # Erase the XOR bubbles first, then put back the exact artwork/title row.
+    for addr in BALL_STATES:
+        b+=op(0xdd,0x21)+word(addr); call_label("ball_xor_ix")
+    for line in range(8):
+        ld_hl_label("title_backup")
+        # Advance HL to this row's saved 32-byte slice.
+        if line:
+            b+=op(0x11)+word(line*32)+op(0x19)
+        b+=op(0x11)+word(screen_addr(line))+op(0x01)+word(32)+op(0xed,0xb0)
+    ld_hl_label("title_attr_backup")
+    b+=op(0x11)+word(0x5800)+op(0x01)+word(32)+op(0xed,0xb0,0xc9)
+
+    mark("demo_draw")
+    # Move on alternate ticks: smooth enough for a 1980s demo, with generous
+    # time left for dense AY register frames and bank transitions.
+    b+=ld_a_mem(DEMO_FRAME)+op(0xee,1)+ld_mem_a(DEMO_FRAME)+op(0xb7,0xc0)
+    for addr in BALL_STATES:
+        b+=op(0xdd,0x21)+word(addr); call_label("ball_step")
+    b+=op(0xc9)
+
+    mark("ball_step")
+    call_label("ball_xor_ix") # erase old position
+    # X += DX, bounce within columns 0..30 (the ball is two bytes wide).
+    b+=op(0xdd,0x7e,0,0xdd,0x86,2,0xfe,31); jr(0x38,"ball_x_ok")
+    b+=op(0xfe,0x80); jr(0x30,"ball_x_left")
+    b+=op(0x3e,29,0xdd,0x36,2,0xff); jr(0x18,"ball_x_ok")
+    mark("ball_x_left"); b+=op(0x3e,1,0xdd,0x36,2,1)
+    mark("ball_x_ok"); b+=op(0xdd,0x77,0)
+    # Y += DY, bounce within rows 2..18 (the ball is two rows high).
+    b+=op(0xdd,0x7e,1,0xdd,0x86,3,0xfe,19); jr(0x38,"ball_y_check_top")
+    b+=op(0xfe,0x80); jr(0x30,"ball_y_top")
+    b+=op(0x3e,17,0xdd,0x36,3,0xff); jr(0x18,"ball_y_ok")
+    mark("ball_y_check_top"); b+=op(0xfe,2); jr(0x30,"ball_y_ok")
+    mark("ball_y_top"); b+=op(0x3e,3,0xdd,0x36,3,1)
+    mark("ball_y_ok"); b+=op(0xdd,0x77,1)
+    jp_label("ball_xor_ix") # draw new position and return to caller
+
+    mark("ball_xor_ix")
+    # Convert character-row Y through a compact address table, add byte X,
+    # then XOR a chunky 16x16 bubble in two eight-line halves.
+    ld_de_label("ball_sprite")
+    for half in range(2):
+        b+=op(0xd5,0xdd,0x7e,1)
+        if half: b+=op(0x3c)
+        b+=op(0x87,0x26,0,0x6f,0xe5)
+        ld_hl_label("ball_row_table"); b+=op(0xd1,0x19,0x5e,0x23,0x56,0xeb)
+        b+=op(0xdd,0x7e,0,0x85,0x6f,0xd1,0x06,8)
+        mark(f"ball_xor_loop_{half}")
+        b+=op(0x1a,0xae,0x77,0x13,0x23,0x1a,0xae,0x77,0x13,0x2b,0x24)
+        jr(0x10,f"ball_xor_loop_{half}")
+    b+=op(0xc9)
+
     while len(b)<BANK_RESET_OFFSET: b.append(0)
     mark("bank_reset")
     b+=op(0xaf)+ld_mem_a(BANK_STATE); jp_label("bank_next")
@@ -284,15 +535,29 @@ def player(data_address):
 
     mark("reg_to_slot"); b+=REG_TO_SLOT
     mark("wave_table"); b+=WAVE_TABLE
+    mark("bar_table"); b+=BAR_TABLE
+    mark("full32"); b+=FULL32
     mark("zero32"); b+=bytes(32)
+    mark("ball_row_table")
+    for row in range(20): b+=word(screen_addr(row*8))
+    mark("ball_sprite")
+    b+=bytes((
+        0x03,0xc0, 0x0f,0xf0, 0x1f,0xf8, 0x3f,0xfc,
+        0x7f,0xfe, 0x7f,0xfe, 0xff,0xff, 0xff,0xff,
+        0xff,0xff, 0xff,0xff, 0x7f,0xfe, 0x7f,0xfe,
+        0x3f,0xfc, 0x1f,0xf8, 0x0f,0xf0, 0x03,0xc0,
+    ))
+    mark("title_glyphs"); b+=title_glyph_data
+    mark("title_backup"); b+=bytes(8*32)
+    mark("title_attr_backup"); b+=bytes(32)
 
     for pos,name in rel:
         target=labels[name]
         delta=target-(pos+1)
         if not -128<=delta<=127: raise ValueError("relative jump out of range")
         b[pos]=delta&255
-    for pos,name in abs_refs:
-        target=BASE+labels[name]
+    for pos,name,addend in abs_refs:
+        target=BASE+labels[name]+addend
         b[pos]=target&255; b[pos+1]=(target>>8)&255
     return bytes(b)
 
@@ -426,15 +691,18 @@ def tap(name, code_chunks, screen=None):
         result+=block(header(3,len(code),BANK_LOAD_ADDR,len(code))); result+=block(b"\xff"+code)
     return bytes(result)
 
-def build(ay_path,out_path,name=None,image_path=None):
+def build(ay_path,out_path,name=None,image_path=None,visual="scope"):
     name=name or Path(out_path).stem
+    if visual not in VISUAL_IDS:
+        raise ValueError("visual must be scope, bars, pulse, colour or demo")
+    initial_visual=VISUAL_IDS[visual]
     raw=Path(ay_path).read_bytes()
     frames=[raw[i:i+14] for i in range(0,len(raw)-1,14) if len(raw[i:i+14])==14]
     events=compress(frames)
-    player_len=len(player(0))
+    player_len=len(player(0,initial_visual,name))
     data_address=BASE+((player_len+0xff)//0x100)*0x100
     chunks=split_events(events, BANK_LOAD_ADDR-data_address)
-    code0=bytearray(player(data_address))
+    code0=bytearray(player(data_address,initial_visual,name))
     code0.extend(b"\0"*(data_address-(BASE+len(code0))))
     code0.extend(chunks[0])
     if len(chunks)>1 and len(code0)!=BANK_LOAD_ADDR-BASE:
@@ -458,4 +726,5 @@ if __name__=="__main__":
     p=argparse.ArgumentParser(); p.add_argument("ay"); p.add_argument("tap")
     p.add_argument("--name", help="Spectrum tape name (defaults to output filename)")
     p.add_argument("--image", help="PNG/JPG artwork to show before playback")
-    a=p.parse_args(); build(a.ay,a.tap,name=a.name,image_path=a.image)
+    p.add_argument("--visual",choices=tuple(VISUAL_IDS),default="scope")
+    a=p.parse_args(); build(a.ay,a.tap,name=a.name,image_path=a.image,visual=a.visual)

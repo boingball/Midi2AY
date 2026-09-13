@@ -121,3 +121,28 @@ Example:
 ```
 python3 midi2ay.py "No Surprises.mid" no_surprises.tap --mode tap --drums hybrid --lead-mode smart --image cover.jpg
 ```
+
+
+## PR7 live visual effects
+
+TAP mode includes five visualisers that can be changed while the music is playing:
+
+| Key | Mode | Effect |
+| ---: | --- | --- |
+| 1 | Scope | Three pitch-reactive oscilloscope traces |
+| 2 | Bars | Cyan, yellow and magenta AY channel volume bars |
+| 3 | Pulse | Music-reactive border with a reversible BRIGHT sweep over the artwork |
+| 4 | Colour | Animated Spectrum colour bars in the visual strip |
+| 5 | Demo | Centred MIDI title with three bouncing 16x16 XOR balls |
+
+Choose the initial mode with `--visual`; keys 1-5 remain active regardless of the initial selection:
+
+```
+python3 midi2ay.py song.mid song.tap --mode tap --image cover.png --visual demo
+```
+
+The player services the AY and visual modes at 50 Hz; mode 5 moves its balls on alternate ticks at 25 Hz. Every effect preserves the banked event stream and artwork backup. The title accepts up to 30 characters from the MIDI filename or `--title`, independently of the Spectrum's 10-character tape-header limit. Its compact font is embedded in the player, so it does not depend on which 128K ROM is paged.
+
+[lib-spectrum's filled-vector 3D demo](https://github.com/breakintoprogram/lib-spectrum/blob/master/demo/demo_3d.z80) is a genuine rotating 3D renderer, but its stock 6K off-screen buffer occupies pageable music memory. Mode 5 therefore uses a smaller artwork-safe renderer inspired by its [sprite demo](https://github.com/breakintoprogram/lib-spectrum/blob/master/demo/demo_sprites.z80), leaving enough frame time for dense AY updates and bank changes.
+
+The keyboard-row scanning and colour-table approach are adapted from ideas and routines in Dean Belfield's MIT-licensed [lib-spectrum](https://github.com/breakintoprogram/lib-spectrum). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and licence text.
