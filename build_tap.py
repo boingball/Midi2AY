@@ -340,7 +340,11 @@ def basic_loader(name="POPCORN", has_image=False, bank_count=0,
         bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["SCREEN$"],)))
     bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
     if bank_count:
+        # bank_reset pages bank 1 but does not load into it - without this
+        # LOAD, bank 1 never receives any data and every later chunk loads
+        # one bank off from where the player expects to find it.
         bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_reset_address))
+        bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
         for _ in range(1,bank_count):
             bodies.append(bytes((TOK["RANDOMIZE"],))+b" "+bytes((TOK["USR"],))+b" "+num(bank_next_address))
             bodies.append(bytes((TOK["LOAD"],))+b' "'+filename+b'" '+bytes((TOK["CODE"],)))
