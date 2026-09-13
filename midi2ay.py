@@ -289,19 +289,21 @@ def main() -> None:
     parser.add_argument("--lead-mode", choices=("smart", "top", "middle"), default="smart")
     parser.add_argument("--mode", choices=("basic", "ay", "tap"), default="basic")
     parser.add_argument("--drums", choices=("off", "noise", "hybrid"), default="off")
+    parser.add_argument("--instruments", choices=("auto", "plain"), default="auto",
+                        help="map General MIDI programs to AY patches, or use plain square tones")
     parser.add_argument("--image", type=Path, default=None, help="PNG/JPG artwork shown before playback (--mode tap only)")
     parser.add_argument("--visual", choices=("scope", "bars", "pulse", "colour", "demo"), default="scope",
                         help="initial TAP visual; keys 1-5 switch effects during playback")
     args = parser.parse_args()
     if args.mode == "ay":
         from ay_midi import compile_ay
-        compile_ay(args.midi, args.output, args.drums, args.lead_mode)
+        compile_ay(args.midi, args.output, args.drums, args.lead_mode, args.instruments)
     elif args.mode == "tap":
         from ay_midi import compile_ay
         from build_tap import build
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".ay") as temp:
-            compile_ay(args.midi, temp.name, args.drums, args.lead_mode)
+            compile_ay(args.midi, temp.name, args.drums, args.lead_mode, args.instruments)
             build(temp.name, args.output, (args.title or args.midi.stem).upper(),
                   image_path=args.image, visual=args.visual)
     else:

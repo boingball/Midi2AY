@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Compile MIDI notes into 50 Hz AY-3-8912 register frames."""
+"""Compile MIDI notes into 50 Hz AY-3-8912 register frames.
+
+The AY only has square-wave tone generators, but a 50 Hz stream can still
+give General MIDI families recognisably different attacks, decays and pitch
+movement.  All patch envelopes are software-driven so the three voices remain
+independent despite the chip having only one shared hardware envelope.
+"""
 from __future__ import annotations
 import argparse
 from collections import defaultdict
@@ -8,6 +14,9 @@ from pathlib import Path
 import math
 
 AY_CLOCK = 1773400
+FRAME_RATE = 50
+
+
 @dataclass
 class Note:
     start: int
@@ -29,11 +38,11 @@ def read_midi(path):
     h=int.from_bytes(d[4:8],"big"); fmt=int.from_bytes(d[8:10],"big")
     count=int.from_bytes(d[10:12],"big"); division=int.from_bytes(d[12:14],"big")
     if fmt not in (0,1) or division&0x8000: raise ValueError("only format 0/1 PPQN MIDI is supported")
-    p=8+h; notes=[]; tempos=[]; programs=[0]*16
+    p=8+h; notes=[]; tempos=[]
     for _ in range(count):
         if d[p:p+4]!=b"MTrk": raise ValueError("invalid MIDI track")
         n=int.from_bytes(d[p+4:p+8],"big"); t=d[p+8:p+8+n]; p+=8+n
-        q=0; tick=0; running=None; active=defaultdict(list)
+        q=0; tick=0; running=None; active=defaultdict(list); programs=[0]*16
         while q<len(t):
             delta,q=vlq(t,q); tick+=delta; status=t[q]
             if status<128:
@@ -64,42 +73,118 @@ def read_midi(path):
 def period(pitch):
     return max(1,min(4095,round(AY_CLOCK/(16*(440*2**((pitch-69)/12))))))
 
+
 def family(program):
-    if program in range(8,16): return "bell"
-    if program in range(16,24): return "organ"
-    if program in range(24,32): return "pluck"
-    if program in range(32,40): return "bass"
-    if program in range(40,56): return "strings"
-    if program in range(56,64): return "brass"
-    if program in range(72,88): return "lead"
-    if program in range(88,96): return "pad"
-    if program in range(96,104): return "effects"
+    """Map a zero-based General MIDI program to an AY-friendly family."""
+    program=max(0,min(127,program))
+    if program < 8: return "piano"
+    if program < 16: return "chromatic"
+    if program < 24: return "organ"
+    if program < 32: return "guitar"
+    if program < 40: return "bass"
+    if program < 48: return "strings"
+    if program < 56: return "ensemble"
+    if program < 64: return "brass"
+    if program < 72: return "reed"
+    if program < 80: return "pipe"
+    if program < 88: return "lead"
+    if program < 96: return "pad"
+    if program < 104: return "effects"
+    if program < 112: return "ethnic"
+    if program < 120: return "percussive"
+    if program < 128: return "sfx"
     return "tone"
 
-# Envelope timings are MIDI ticks. AY has one shared hardware envelope, so
-# these patches use frame-level volume shaping and remain independent per voice.
+
+@dataclass(frozen=True)
+class Patch:
+    """A deliberately small 50 Hz software synth patch.
+
+    Times are video frames rather than MIDI ticks, so the sound is independent
+    of the MIDI PPQN and tempo. Pitch values are cents. ``noise_period`` mixes
+    the AY's shared noise generator into the voice when percussion is absent.
+    """
+
+    attack: int
+    decay: int
+    sustain: float
+    release: int
+    attack_floor: float = 0.25
+    vibrato_cents: int = 0
+    vibrato_delay: int = 0
+    vibrato_step: int = 4
+    tremolo: float = 0.0
+    tremolo_step: int = 4
+    scoop_cents: int = 0
+    scoop_frames: int = 0
+    noise_period: int | None = None
+
+
+# These do not claim to reproduce sampled General MIDI instruments. They are
+# compact AY patches chosen to preserve the tune while giving each family a
+# useful chip-synth identity. Slow modulation is intentional: changing tone
+# periods every video frame makes banked TAP streams unnecessarily large.
 PATCHES = {
-    "bass":    (4, 20, 0.90),
-    "bell":    (2, 80, 0.72),
-    "brass":   (8, 30, 0.78),
-    "effects": (2, 70, 0.65),
-    "lead":    (4, 18, 1.00),
-    "organ":   (6, 35, 0.96),
-    "pad":     (120, 180, 0.82),
-    "pluck":   (2, 45, 0.55),
-    "strings": (80, 120, 0.86),
-    "tone":    (3, 24, 0.92),
+    "piano":      Patch(0, 10, 0.38, 3, 1.00),
+    "chromatic":  Patch(0, 22, 0.18, 5, 1.00, 4, 8, 5, 0.05, 6),
+    "organ":      Patch(2, 4, 0.94, 3, 0.45, 3, 8, 5, 0.12, 5),
+    "guitar":     Patch(0, 14, 0.40, 4, 1.00, 5, 10, 5),
+    "bass":       Patch(0, 6, 0.80, 3, 1.00, 0, 0, 4, 0.03, 6, -24, 5),
+    "strings":    Patch(8, 8, 0.80, 10, 0.18, 9, 12, 4, 0.07, 5),
+    "ensemble":   Patch(12, 8, 0.74, 12, 0.14, 11, 10, 4, 0.10, 5),
+    "brass":      Patch(1, 6, 0.82, 5, 0.65, 4, 8, 5, 0.04, 6, -28, 5),
+    "reed":       Patch(2, 5, 0.84, 5, 0.40, 8, 9, 4, 0.05, 5),
+    "pipe":       Patch(2, 4, 0.90, 4, 0.35, 10, 6, 4, 0.04, 6),
+    "lead":       Patch(0, 3, 0.92, 4, 1.00, 13, 7, 4, 0.04, 5, -12, 3),
+    "pad":        Patch(15, 10, 0.72, 15, 0.10, 8, 16, 5, 0.12, 6),
+    "effects":    Patch(0, 9, 0.58, 8, 1.00, 24, 0, 3, 0.18, 4, 30, 10, 8),
+    "ethnic":     Patch(0, 16, 0.42, 5, 1.00, 6, 8, 5, 0.04, 6),
+    "percussive": Patch(0, 8, 0.16, 2, 1.00, 0, 0, 4, 0.00, 4, 0, 0, 13),
+    "sfx":        Patch(0, 6, 0.52, 5, 1.00, 32, 0, 3, 0.18, 4, 40, 10, 6),
+    "tone":       Patch(0, 4, 0.88, 3, 1.00),
 }
 
-def patch_volume(note, frame_start, frame_end):
-    attack, release, sustain = PATCHES[family(note.program)]
-    age = max(0, frame_start - note.start)
-    remaining = max(0, note.end - frame_end)
-    level = 1.0
-    if age < attack:
-        level = 0.30 + 0.70 * age / max(1, attack)
-    if remaining < release:
-        level = min(level, sustain * remaining / max(1, release))
+PLAIN_PATCH = Patch(0, 0, 1.0, 0, 1.0)
+LFO = (0.0, 0.5, 1.0, 0.5, 0.0, -0.5, -1.0, -0.5)
+
+
+def selected_patch(note, instrument_mode="auto"):
+    if instrument_mode == "plain":
+        return PLAIN_PATCH
+    if instrument_mode != "auto":
+        raise ValueError("instrument mode must be auto or plain")
+    return PATCHES[family(note.program)]
+
+
+def note_frame_position(note, frame_start, frame_end, frame_ticks):
+    """Return elapsed, remaining and total 50 Hz frames for a note."""
+    age=max(0,(frame_start-note.start)//frame_ticks)
+    remaining=max(0,math.ceil((note.end-frame_end)/frame_ticks))
+    duration=max(1,math.ceil((note.end-note.start)/frame_ticks))
+    return age,remaining,duration
+
+
+def patch_volume(note, frame_start, frame_end, frame_ticks=1, instrument_mode="auto"):
+    patch=selected_patch(note,instrument_mode)
+    age,remaining,duration=note_frame_position(note,frame_start,frame_end,frame_ticks)
+    # Compress slow envelopes around short source notes. A one-frame melody
+    # note must still speak immediately; a long strings/pad note keeps the
+    # full slow attack that gives the family its character.
+    attack=min(patch.attack,max(0,duration//4))
+    decay=min(patch.decay,max(0,duration-attack-1))
+    release=min(patch.release,max(0,duration//4))
+    if attack and age < attack:
+        level=patch.attack_floor+(1.0-patch.attack_floor)*(age+1)/attack
+    elif decay and age < attack+decay:
+        decay_age=age-attack
+        level=1.0-(1.0-patch.sustain)*decay_age/decay
+    else:
+        level=patch.sustain
+    if patch.tremolo:
+        phase=(age//max(1,patch.tremolo_step))%len(LFO)
+        level*=1.0-patch.tremolo*(0.5+0.5*LFO[phase])
+    if release and remaining < release:
+        level=min(level,patch.sustain*max(0.25,remaining/release))
     volume = max(1, min(15, round(note.velocity * 15 / 127 * level)))
     # One-step volume changes on a 50 Hz AY stream cost another event record
     # but are barely audible. Quantising the envelope keeps long songs inside
@@ -107,6 +192,18 @@ def patch_volume(note, frame_start, frame_end):
     if volume > 1:
         volume = min(15, ((volume + 1) // 2) * 2)
     return volume
+
+
+def patch_period(note, frame_start, frame_end, frame_ticks=1, instrument_mode="auto"):
+    patch=selected_patch(note,instrument_mode)
+    age,_,_=note_frame_position(note,frame_start,frame_end,frame_ticks)
+    cents=0.0
+    if patch.scoop_frames and age < patch.scoop_frames:
+        cents+=patch.scoop_cents*(patch.scoop_frames-age)/patch.scoop_frames
+    if patch.vibrato_cents and age >= patch.vibrato_delay:
+        phase=((age-patch.vibrato_delay)//max(1,patch.vibrato_step))%len(LFO)
+        cents+=patch.vibrato_cents*LFO[phase]
+    return period(note.pitch+cents/100.0)
 
 def drum_profile(pitch):
     """Return noise period, optional hybrid tone pitch, and decay style."""
@@ -199,7 +296,8 @@ def _choose_voices(tones, lead_mode="smart", previous_lead=None, previous_middle
     return [middle, lead, bass], lead_pitch, middle_pitch
 
 
-def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart"):
+def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart",
+               instrument_mode="auto"):
     if notes is None: return b"",tempo
     end=max(n.end for n in notes)
     # MIDI ticks per second = division * 1_000_000 / tempo (microseconds per
@@ -208,7 +306,7 @@ def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart"):
     # step as tempo got faster and generated far too many 50 Hz frames per
     # bar, stretching every note out over many more real frames than it
     # should play for.
-    step=max(1,round(division*1000000/(tempo*50)))
+    step=max(1,round(division*1000000/(tempo*FRAME_RATE)))
     total=max(1,math.ceil((end+step)/step))
     out=bytearray()
     previous_lead = None
@@ -229,10 +327,24 @@ def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart"):
         regs=[0]*14; mixer=63
         for i,n in enumerate(voices):
             if n is not None:
-                per=period(n.pitch); regs[i*2]=per&255; regs[i*2+1]=(per>>8)&15
-                vol=patch_volume(n, a, b)
+                per=patch_period(n,a,b,step,instrument_mode)
+                regs[i*2]=per&255; regs[i*2+1]=(per>>8)&15
+                vol=patch_volume(n,a,b,step,instrument_mode)
                 regs[8+i]=vol
                 mixer &= ~(1<<i)
+        # A few General MIDI families benefit from a shared noise texture.
+        # Real channel-10 percussion owns the noise generator whenever it is
+        # present, so an effects patch can never change a drum's character.
+        patch_noise=[]
+        if not drums and instrument_mode=="auto":
+            for i,n in enumerate(voices):
+                if n is None: continue
+                noise_period=selected_patch(n,instrument_mode).noise_period
+                if noise_period is not None:
+                    patch_noise.append(noise_period)
+                    mixer &= ~(1<<(i+3))
+        if patch_noise:
+            regs[6]=min(patch_noise)
         if drums:
             # AY has one shared noise generator. Choose the loudest hit for
             # this frame, then map its MIDI percussion note to a recognisable
@@ -249,23 +361,23 @@ def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart"):
                 mixer &= ~(1<<2)  # tone on channel C
 
         regs[7]=mixer
-        # Simple patch shaping: envelope flag for sustained pad/string voices.
-        if any(n and family(n.program) in ("strings","pad") for n in voices):
-            regs[11]=24; regs[12]=0; regs[13]=9
         out.extend(regs)
     out.append(255)
     return bytes(out), round(60000000/(tempo if tempo else 500000))
 
-def compile_ay(input_path, output_path, drum_mode="off", lead_mode="smart"):
+def compile_ay(input_path, output_path, drum_mode="off", lead_mode="smart",
+               instrument_mode="auto"):
     division,notes,tempos=read_midi(input_path)
     tempo=tempos[0][1] if tempos else 500000
-    frames,_=frames_for(notes,division,drum_mode,tempo,lead_mode)
+    frames,_=frames_for(notes,division,drum_mode,tempo,lead_mode,instrument_mode)
     Path(output_path).write_bytes(frames)
-    print(f"wrote {output_path} ({len(frames)} bytes, {len(frames)//14} AY frames, drums={drum_mode}, lead={lead_mode})")
+    print(f"wrote {output_path} ({len(frames)} bytes, {len(frames)//14} AY frames, "
+          f"drums={drum_mode}, lead={lead_mode}, instruments={instrument_mode})")
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
     p.add_argument("midi",type=Path); p.add_argument("output",type=Path)
     p.add_argument("--drums",choices=("off","noise","hybrid"),default="off")
     p.add_argument("--lead-mode",choices=("smart","top","middle"),default="smart")
-    a=p.parse_args(); compile_ay(a.midi,a.output,a.drums,a.lead_mode)
+    p.add_argument("--instruments",choices=("auto","plain"),default="auto")
+    a=p.parse_args(); compile_ay(a.midi,a.output,a.drums,a.lead_mode,a.instruments)
