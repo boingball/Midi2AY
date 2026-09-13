@@ -3,3 +3,4 @@
 *.midi
 *_ay.bas
 output/
+__pycache__/

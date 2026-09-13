@@ -287,8 +287,21 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--title", default=None)
     parser.add_argument("--lead-mode", choices=("smart", "top", "middle"), default="smart")
+    parser.add_argument("--mode", choices=("basic", "ay", "tap"), default="basic")
+    parser.add_argument("--drums", choices=("off", "noise", "hybrid"), default="off")
     args = parser.parse_args()
-    convert(args.midi, args.output, args.title or args.midi.stem, args.lead_mode)
+    if args.mode == "ay":
+        from ay_midi import compile_ay
+        compile_ay(args.midi, args.output, args.drums)
+    elif args.mode == "tap":
+        from ay_midi import compile_ay
+        from build_tap import build
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ay") as temp:
+            compile_ay(args.midi, temp.name, args.drums)
+            build(temp.name, args.output, (args.title or args.midi.stem).upper())
+    else:
+        convert(args.midi, args.output, args.title or args.midi.stem, args.lead_mode)
 
 
 if __name__ == "__main__":

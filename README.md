@@ -27,3 +27,33 @@ The output uses Spectrum 128 PLAY syntax, including tempo, octave, duration sepa
 This is an experimental converter, not a General MIDI player. It currently supports three AY tone voices, simple tempo handling and BASIC output. Future work can add separate MIDI-track routing, volume envelopes, noise, TAP/TZX packaging and a machine-code AY player.
 
 No copyrighted MIDI files or song-specific generated output are included in this repository. Use input files you are licensed to use, and keep generated song files outside the public repository unless you have permission to redistribute them.
+
+## Enhanced AY output
+
+The optional machine-code path preserves MIDI channel/program information and writes 50 Hz AY register frames for `ay_player.asm`. MIDI channel 10 can be rendered through the AY noise generator:
+
+```
+python3 midi2ay.py song.mid song.ay --mode ay --drums noise
+python3 midi2ay.py song.mid song.ay --mode ay --drums hybrid
+```
+
+`off` ignores percussion, `noise` uses AY noise, and `hybrid` adds a short tone attack for kick-like notes. The current player consumes one 14-register frame per tick; assemble it with a Z80 assembler and call `ay_tick` at 50 Hz.
+
+## Spectrum screens
+
+Convert PNG or JPG artwork into a native 256x192, 6912-byte Spectrum screen:
+
+```
+python3 -m pip install Pillow
+python3 spectrum_screen.py cover.png cover.scr
+```
+
+## TAP machine-code output
+
+The machine-code path can package compressed AY register events into a self-starting TAP. It contains a BASIC loader followed by a Z80 player and the music data:
+
+```
+python3 midi2ay.py song.mid song.tap --mode tap --drums noise
+```
+
+The resulting TAP loads at 32768, waits on the Spectrum's 50 Hz interrupt and drives the AY directly. The event stream stores only changed AY registers, keeping longer songs practical on a 128K machine. The current player has no artwork or waveform overlay yet; those are planned as optional TAP blocks.
