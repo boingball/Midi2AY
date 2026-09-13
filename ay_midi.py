@@ -65,12 +65,68 @@ def period(pitch):
     return max(1,min(4095,round(AY_CLOCK/(16*(440*2**((pitch-69)/12))))))
 
 def family(program):
+    if program in range(8,16): return "bell"
+    if program in range(16,24): return "organ"
+    if program in range(24,32): return "pluck"
     if program in range(32,40): return "bass"
-    if program in range(40,52): return "strings"
+    if program in range(40,56): return "strings"
     if program in range(56,64): return "brass"
-    if program in range(80,88): return "lead"
+    if program in range(72,88): return "lead"
     if program in range(88,96): return "pad"
+    if program in range(96,104): return "effects"
     return "tone"
+
+# Envelope timings are MIDI ticks. AY has one shared hardware envelope, so
+# these patches use frame-level volume shaping and remain independent per voice.
+PATCHES = {
+    "bass":    (4, 20, 0.90),
+    "bell":    (2, 80, 0.72),
+    "brass":   (8, 30, 0.78),
+    "effects": (2, 70, 0.65),
+    "lead":    (4, 18, 1.00),
+    "organ":   (6, 35, 0.96),
+    "pad":     (120, 180, 0.82),
+    "pluck":   (2, 45, 0.55),
+    "strings": (80, 120, 0.86),
+    "tone":    (3, 24, 0.92),
+}
+
+def patch_volume(note, frame_start, frame_end):
+    attack, release, sustain = PATCHES[family(note.program)]
+    age = max(0, frame_start - note.start)
+    remaining = max(0, note.end - frame_end)
+    level = 1.0
+    if age < attack:
+        level = 0.30 + 0.70 * age / max(1, attack)
+    if remaining < release:
+        level = min(level, sustain * remaining / max(1, release))
+    return max(1, min(15, round(note.velocity * 15 / 127 * level)))
+
+def drum_profile(pitch):
+    """Return noise period, optional hybrid tone pitch, and decay style."""
+    if pitch in (35, 36): return 24, max(24, pitch - 12), "kick"
+    if pitch in (38, 40): return 10, None, "snare"
+    if pitch in (42, 44): return 5, None, "closed_hat"
+    if pitch == 46: return 3, None, "open_hat"
+    if pitch in (41, 43, 45, 47, 48, 50): return 16, max(28, pitch - 12), "tom"
+    if pitch in (49, 52, 55, 57): return 2, None, "crash"
+    if pitch in (51, 53, 59): return 4, None, "ride"
+    return max(1, min(31, 31 - round((pitch - 35) * 0.45))), None, "percussion"
+
+def drum_volume(note, frame_start, frame_end, style):
+    duration = max(1, note.end - note.start)
+    age = max(0, frame_start - note.start)
+    remaining = max(0, note.end - frame_end)
+    if style in ("closed_hat", "snare", "kick"):
+        decay = min(duration, 45)
+    elif style in ("crash", "ride", "open_hat"):
+        decay = min(duration, 180)
+    else:
+        decay = min(duration, 90)
+    level = max(0.18, 1.0 - age / max(1, decay))
+    if remaining <= 0:
+        level *= 0.35
+    return max(1, min(15, round(note.velocity * 15 / 127 * level)))
 
 def _choose_voices(tones, lead_mode="smart", previous_lead=None, previous_middle=None):
     """Route a polyphonic tone set to AY accompaniment, lead and bass.
@@ -165,21 +221,24 @@ def frames_for(notes, division, drum_mode, tempo=500000, lead_mode="smart"):
         for i,n in enumerate(voices):
             if n is not None:
                 per=period(n.pitch); regs[i*2]=per&255; regs[i*2+1]=(per>>8)&15
-                vol=max(1,min(15,round(n.velocity*15/127)))
-                f=family(n.program)
-                if f=="bass": vol=max(1,vol-1)
-                if f in ("strings","pad"): vol=max(1,vol-3)
+                vol=patch_volume(n, a, b)
                 regs[8+i]=vol
                 mixer &= ~(1<<i)
         if drums:
-            d=max(drums,key=lambda n:n.velocity)
-            # AY noise period: low notes are kick/tom-like; high notes are hats.
-            regs[6]=max(1,min(31,31-round((d.pitch-35)*0.45)))
-            regs[10]=max(regs[10],min(15,round(d.velocity*15/127)))
+            # AY has one shared noise generator. Choose the loudest hit for
+            # this frame, then map its MIDI percussion note to a recognisable
+            # kick, snare, hat, tom, crash or ride character.
+            d=max(drums, key=lambda n: n.velocity)
+            noise_period, tone_pitch, style = drum_profile(d.pitch)
+            regs[6]=noise_period
+            regs[10]=max(regs[10], drum_volume(d, a, b, style))
             mixer &= ~(1<<5)  # noise on channel C
-            if drum_mode=="hybrid" and regs[4]==0 and d.pitch<50:
-                per=period(max(24,d.pitch-12)); regs[4]=per&255; regs[5]=(per>>8)&15
-                regs[10]=max(regs[10],10); mixer &= ~(1<<2)
+            if drum_mode=="hybrid" and tone_pitch is not None:
+                per=period(tone_pitch)
+                regs[4]=per&255; regs[5]=(per>>8)&15
+                regs[10]=max(regs[10], min(15, drum_volume(d, a, b, style)+2))
+                mixer &= ~(1<<2)  # tone on channel C
+
         regs[7]=mixer
         # Simple patch shaping: envelope flag for sustained pad/string voices.
         if any(n and family(n.program) in ("strings","pad") for n in voices):
