@@ -21,6 +21,11 @@ PER_A,PER_B,PER_C,VOL_A,VOL_B,VOL_C=range(32610,32616)
 PHASE_A,PHASE_B,PHASE_C=range(32616,32619)
 # Banked TAP support for long event streams.
 BANK_STATE=32619
+VISUAL_MODE=32620
+VISUAL_LAST=32621
+VISUAL_PHASE=32622
+PULSE_ROW=32623
+TICK_OFFSET=0x60
 BANK_RESET_OFFSET=0x1800
 BANK_NEXT_OFFSET=0x1810
 SCREEN_BACKUP_OFFSET=0x1840
@@ -81,12 +86,17 @@ def wave_picture(phase):
         rows[y][x//8] |= 0x80 >> (x%8)
     return b"".join(bytes(r) for r in rows)
 WAVE_TABLE=b"".join(wave_picture(p) for p in range(WAVE_PHASES))
+BAR_TABLE=b"".join(bytes((0xff,))*(level*2)+bytes(32-level*2) for level in range(16))
+FULL32=bytes((0xff,))*32
 
 # Maps AY register index (0-13) to a slot in the 6-byte shadow area above
 # (PER_A..VOL_C), or 0xff for registers the scope doesn't track.
 REG_TO_SLOT=bytes((0,0xff,1,0xff,2,0xff,0xff,0xff,3,4,5,0xff,0xff,0xff))
+VISUAL_IDS={"scope":1,"bars":2,"pulse":3,"colour":4}
 
-def player(data_address):
+def player(data_address, initial_visual=1):
+    if initial_visual not in VISUAL_IDS.values():
+        raise ValueError("initial visual mode must be 1-4")
     b=bytearray()
     labels={}
     rel=[]
@@ -132,9 +142,8 @@ def player(data_address):
     b+=op(0xed,0x56) # IM 1
     b+=op(0xcd)+word(BASE+0x22) # init
     mark("main"); b+=op(0x76) # HALT, 50 Hz ROM interrupt
-    # Keep the tick entry point clear of the init routine.  Init now contains
-    # EI, so it is longer than the original 0x30-byte slot.
-    b+=op(0xcd)+word(BASE+0x40)
+    # Keep the tick entry point clear of the expanded visual-mode init state.
+    b+=op(0xcd)+word(BASE+TICK_OFFSET)
     b+=ld_a_mem(PLAYING)+op(0xb7); jr(0x20,"main")
     mark("stopped"); b+=op(0xf3,0x76) # stop safely; BASIC stack was replaced for bank paging
     while len(b)<0x22: b.append(0)
@@ -142,14 +151,17 @@ def player(data_address):
     b+=op(0xaf)+ld_mem_a(PLAYING)
     b+=op(0x3e,1)+ld_mem_a(PLAYING)
     b+=op(0x21,0,0)+ld_mem_hl(WAIT)
+    b+=op(0x3e,initial_visual)+ld_mem_a(VISUAL_MODE)
+    b+=op(0xaf)+ld_mem_a(VISUAL_LAST)+ld_mem_a(VISUAL_PHASE)
+    b+=op(0x3e,0xff)+ld_mem_a(PULSE_ROW)
     call_label("attr_init")
     b+=op(0xfb,0xc9)
-    while len(b)<0x40: b.append(0)
+    while len(b)<TICK_OFFSET: b.append(0)
     mark("tick"); b+=ld_a_mem(PLAYING)+op(0xb7); jr_far(0x28,"tick_end")
     # Animate the scope every tick, not just on ticks with a register change -
     # its phase counters need to keep advancing even while WAIT is counting
     # down, or the trace would visibly stall between events.
-    call_label("scope_draw")
+    call_label("visual_draw")
     b+=ld_hl_mem(WAIT)+op(0x7c,0xb5); jr(0x28,"process")
     b+=op(0x2b)+ld_mem_hl(WAIT)+op(0xc9)
     mark("process"); b+=ld_hl_mem(PTR)
@@ -194,6 +206,63 @@ def player(data_address):
     jr(0x18,"finish")
     mark("tick_end"); b+=op(0xc9)
     mark("finish"); b+=op(0xaf)+ld_mem_a(PLAYING)+op(0xc9)
+
+    # Visual dispatcher. Keys 1-4 select scope, volume bars, artwork pulse,
+    # and colour bars. The single keyboard half-row read is adapted from the
+    # approach used by Dean Belfield's MIT-licensed lib-spectrum keyboard
+    # module; only the 1-4 row is needed here.
+    mark("visual_draw")
+    call_label("keyboard_1_4")
+    b+=ld_a_mem(VISUAL_MODE)+op(0x47) # B=requested mode
+    b+=ld_a_mem(VISUAL_LAST)+op(0xb8) # CP B
+    jr(0x28,"visual_dispatch")
+    b+=op(0xfe,3); jr(0x20,"visual_no_pulse_cleanup")
+    call_label("pulse_clear")
+    mark("visual_no_pulse_cleanup")
+    b+=ld_a_mem(VISUAL_MODE)+ld_mem_a(VISUAL_LAST)
+    b+=op(0x3e,0xff)+ld_mem_a(PULSE_ROW)
+    call_label("visual_clear")
+    mark("visual_dispatch")
+    b+=ld_a_mem(VISUAL_MODE)+op(0xfe,1); jr_far(0x28,"scope_draw")
+    b+=op(0xfe,2); jr_far(0x28,"bars_draw")
+    b+=op(0xfe,3); jr_far(0x28,"pulse_draw")
+    jp_label("colour_draw")
+
+    mark("keyboard_1_4")
+    b+=op(0x01)+word(0xf7fe)+op(0xed,0x78,0x2f,0xe6,0x0f,0xc8)
+    b+=op(0xcb,0x47); jr(0x28,"key_test_2") # BIT 0,A / key 1
+    b+=op(0x3e,1)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+    mark("key_test_2"); b+=op(0xcb,0x4f); jr(0x28,"key_test_3")
+    b+=op(0x3e,2)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+    mark("key_test_3"); b+=op(0xcb,0x57); jr(0x28,"key_test_4")
+    b+=op(0x3e,3)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+    mark("key_test_4"); b+=op(0xcb,0x5f,0xc8)
+    b+=op(0x3e,4)+ld_mem_a(VISUAL_MODE)+op(0xc9)
+
+    # Toggle BRIGHT on one attribute row. XOR makes this reversible even when
+    # the source artwork already used bright colours.
+    mark("pulse_toggle")
+    b+=op(0x26,0,0x6f) # H=0, L=row
+    for _ in range(5): b+=op(0x29) # row * 32
+    b+=op(0x11)+word(0x5800)+op(0x19,0x06,32)
+    mark("pulse_toggle_loop")
+    b+=op(0x7e,0xee,0x40,0x77,0x23); jr(0x10,"pulse_toggle_loop")
+    b+=op(0xc9)
+
+    mark("pulse_clear")
+    b+=ld_a_mem(PULSE_ROW)+op(0xfe,0xff,0xc8)
+    call_label("pulse_toggle")
+    b+=op(0x3e,0xff)+ld_mem_a(PULSE_ROW)
+    b+=op(0xaf,0xd3,0xfe,0xc9) # black border
+
+    # Clear only the 24-pixel visual strip, preserving the cover above it.
+    mark("visual_clear")
+    for rows in CHANNEL_ROWS:
+        for addr in rows:
+            ld_hl_label("zero32")
+            b+=op(0x11)+word(addr)+op(0x01)+word(32)+op(0xed,0xb0)
+    call_label("attr_init")
+    b+=op(0xc9)
 
     # One-off: force the scope strip's attributes so the trace is always
     # visible regardless of what colour the artwork underneath it used.
@@ -243,6 +312,49 @@ def player(data_address):
         mark(f"ch_done_{ch}")
     b+=op(0xc9) # RET
 
+    # Three horizontal VU bars, one 8-pixel band per AY channel. A compact
+    # table turns each 4-bit AY volume directly into a 0-30 byte bar.
+    mark("bars_draw")
+    for ch,(vol_var,rows,attr) in enumerate(zip(
+            (VOL_A,VOL_B,VOL_C),CHANNEL_ROWS,(0x45,0x46,0x43))):
+        b+=ld_a_mem(vol_var)+op(0xe6,0x0f,0x26,0,0x6f)
+        for _ in range(5): b+=op(0x29)
+        ld_de_label("bar_table"); b+=op(0x19)
+        for addr in rows:
+            b+=op(0xe5)+op(0x11)+word(addr)+op(0x01)+word(32)+op(0xed,0xb0,0xe1)
+        attr_addr=ATTR_BASE+ch*32
+        b+=ld_hl(attr_addr)+op(0x3e,attr,0x77)+op(0x11)+word(attr_addr+1)
+        b+=op(0x01)+word(31)+op(0xed,0xb0)
+    b+=op(0xc9)
+
+    # Artwork pulse: border colour follows the combined channel volume while
+    # one reversible BRIGHT row sweeps down the untouched part of the cover.
+    mark("pulse_draw")
+    b+=ld_a_mem(VOL_A)+op(0x47)+ld_a_mem(VOL_B)+op(0x80,0x47)
+    b+=ld_a_mem(VOL_C)+op(0x80,0xe6,0x07,0xd3,0xfe)
+    b+=ld_a_mem(PULSE_ROW)+op(0xfe,0xff); jr(0x28,"pulse_first_row")
+    call_label("pulse_toggle")
+    b+=ld_a_mem(PULSE_ROW)+op(0x3c,0xfe,21); jr(0x38,"pulse_store_row")
+    b+=op(0xaf); jr(0x18,"pulse_store_row")
+    mark("pulse_first_row"); b+=op(0xaf)
+    mark("pulse_store_row"); b+=ld_mem_a(PULSE_ROW)
+    call_label("pulse_toggle")
+    b+=op(0xc9)
+
+    # Animated colour bars inspired by lib-spectrum's colour-table demo, but
+    # frame-based rather than cycle-timed so AY playback remains uninterrupted.
+    mark("colour_draw")
+    for rows in CHANNEL_ROWS:
+        for addr in rows:
+            ld_hl_label("full32")
+            b+=op(0x11)+word(addr)+op(0x01)+word(32)+op(0xed,0xb0)
+    b+=ld_a_mem(VISUAL_PHASE)+op(0x3c,0xe6,0x07)+ld_mem_a(VISUAL_PHASE)
+    b+=op(0xd3,0xfe,0x5f)+ld_hl(ATTR_BASE)+op(0x06,ATTR_LEN)
+    mark("colour_attr_loop")
+    b+=op(0x7b,0xe6,0x07,0xf6,0x40,0x77,0x23,0x1c)
+    jr(0x10,"colour_attr_loop")
+    b+=op(0xc9)
+
     while len(b)<BANK_RESET_OFFSET: b.append(0)
     mark("bank_reset")
     b+=op(0xaf)+ld_mem_a(BANK_STATE); jp_label("bank_next")
@@ -284,6 +396,8 @@ def player(data_address):
 
     mark("reg_to_slot"); b+=REG_TO_SLOT
     mark("wave_table"); b+=WAVE_TABLE
+    mark("bar_table"); b+=BAR_TABLE
+    mark("full32"); b+=FULL32
     mark("zero32"); b+=bytes(32)
 
     for pos,name in rel:
@@ -426,15 +540,18 @@ def tap(name, code_chunks, screen=None):
         result+=block(header(3,len(code),BANK_LOAD_ADDR,len(code))); result+=block(b"\xff"+code)
     return bytes(result)
 
-def build(ay_path,out_path,name=None,image_path=None):
+def build(ay_path,out_path,name=None,image_path=None,visual="scope"):
     name=name or Path(out_path).stem
+    if visual not in VISUAL_IDS:
+        raise ValueError("visual must be scope, bars, pulse or colour")
+    initial_visual=VISUAL_IDS[visual]
     raw=Path(ay_path).read_bytes()
     frames=[raw[i:i+14] for i in range(0,len(raw)-1,14) if len(raw[i:i+14])==14]
     events=compress(frames)
-    player_len=len(player(0))
+    player_len=len(player(0,initial_visual))
     data_address=BASE+((player_len+0xff)//0x100)*0x100
     chunks=split_events(events, BANK_LOAD_ADDR-data_address)
-    code0=bytearray(player(data_address))
+    code0=bytearray(player(data_address,initial_visual))
     code0.extend(b"\0"*(data_address-(BASE+len(code0))))
     code0.extend(chunks[0])
     if len(chunks)>1 and len(code0)!=BANK_LOAD_ADDR-BASE:
@@ -458,4 +575,5 @@ if __name__=="__main__":
     p=argparse.ArgumentParser(); p.add_argument("ay"); p.add_argument("tap")
     p.add_argument("--name", help="Spectrum tape name (defaults to output filename)")
     p.add_argument("--image", help="PNG/JPG artwork to show before playback")
-    a=p.parse_args(); build(a.ay,a.tap,name=a.name,image_path=a.image)
+    p.add_argument("--visual",choices=tuple(VISUAL_IDS),default="scope")
+    a=p.parse_args(); build(a.ay,a.tap,name=a.name,image_path=a.image,visual=a.visual)
