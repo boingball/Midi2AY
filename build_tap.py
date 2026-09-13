@@ -19,6 +19,13 @@ TMP=32609
 # ticks where nothing changed.
 PER_A,PER_B,PER_C,VOL_A,VOL_B,VOL_C=range(32610,32616)
 PHASE_A,PHASE_B,PHASE_C=range(32616,32619)
+# Banked TAP support for long event streams.
+BANK_STATE=32619
+BANK_RESET_OFFSET=0x1800
+BANK_NEXT_OFFSET=0x1810
+BANK_LOAD_ADDR=0xc000
+BANK_SIZE=0x4000
+BANK_MARKER=b"\xff\xfe"
 
 def word(n): return bytes((n&255,n>>8))
 def op(*b): return bytes(b)
@@ -111,12 +118,10 @@ def player(data_address):
     # ROM's next toggle XORs the wrong base value and can scramble the RAM
     # bank bits too - silently switching away the bank our event data lives
     # in a few dozen frames in. Keep BANK_M in sync with what we write.
-    b+=op(0xf3) # DI while we repoint ROM/interrupt mode
-    b+=op(0x3a)+word(0x5b5c) # LD A,(BANK_M) - the shadow of the last port 0x7ffd write
-    b+=op(0xe6,0xef) # AND 0xef - clear only the ROM-select bit, keep the current RAM bank
-    b+=op(0x32)+word(0x5b5c) # LD (BANK_M),A - keep the ROM's shadow copy in sync
-    b+=op(0x01)+word(0x7ffd) # LD BC,0x7ffd
-    b+=op(0xed,0x79) # OUT (C),A
+    b+=op(0xf3)
+    b+=op(0xaf)+ld_mem_a(BANK_STATE)
+    b+=ld_mem_a(0x5b5c)
+    b+=op(0x01)+word(0x7ffd)+op(0xed,0x79)
     b+=op(0xed,0x56) # IM 1
     b+=op(0xcd)+word(BASE+0x20) # init
     mark("main"); b+=op(0x76) # HALT, 50 Hz ROM interrupt
@@ -140,7 +145,15 @@ def player(data_address):
     b+=ld_hl_mem(WAIT)+op(0x7c,0xb5); jr(0x28,"process")
     b+=op(0x2b)+ld_mem_hl(WAIT)+op(0xc9)
     mark("process"); b+=ld_hl_mem(PTR)
-    b+=op(0x5e,0x23,0x56,0x23)+op(0xed,0x53)+word(MASK)+ld_mem_hl(PTR)
+    b+=op(0x5e,0x23,0x56,0x23)
+    # FF FE is a bank transition marker; it cannot be a valid 14-bit mask.
+    b+=op(0x7a,0xfe,0xff); jr_far(0x20,"not_bank_marker")
+    b+=op(0x7b,0xfe,0xfe); jr_far(0x20,"not_bank_marker")
+    call_label("bank_next")
+    b+=ld_hl(0xc000)+ld_mem_hl(PTR)
+    jp_label("process")
+    mark("not_bank_marker")
+    b+=op(0xed,0x53)+word(MASK)+ld_mem_hl(PTR)
     b+=op(0xaf,0x32)+word(REG)
     mark("reg_loop")
     b+=op(0xed,0x6b)+word(MASK) # HL=mask
@@ -221,6 +234,14 @@ def player(data_address):
             b+=op(0xed,0xb0) # LDIR
         mark(f"ch_done_{ch}")
     b+=op(0xc9) # RET
+
+    while len(b)<BANK_RESET_OFFSET: b.append(0)
+    mark("bank_reset")
+    b+=op(0xaf)+ld_mem_a(BANK_STATE)+jp_label("bank_next")
+    while len(b)<BANK_NEXT_OFFSET: b.append(0)
+    mark("bank_next")
+    b+=ld_a_mem(BANK_STATE)+op(0x3c,0xe6,0x07)+ld_mem_a(BANK_STATE)
+    b+=ld_mem_a(0x5b5c)+op(0x01)+word(0x7ffd)+op(0xed,0x79)+op(0xc9)
 
     mark("reg_to_slot"); b+=REG_TO_SLOT
     mark("wave_table"); b+=WAVE_TABLE
