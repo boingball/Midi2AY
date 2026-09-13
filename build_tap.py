@@ -237,7 +237,7 @@ def player(data_address):
 
     while len(b)<BANK_RESET_OFFSET: b.append(0)
     mark("bank_reset")
-    b+=op(0xaf)+ld_mem_a(BANK_STATE)+jp_label("bank_next")
+    b+=op(0xaf)+ld_mem_a(BANK_STATE); jp_label("bank_next")
     while len(b)<BANK_NEXT_OFFSET: b.append(0)
     mark("bank_next")
     b+=ld_a_mem(BANK_STATE)+op(0x3c,0xe6,0x07)+ld_mem_a(BANK_STATE)
