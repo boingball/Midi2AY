@@ -75,7 +75,13 @@ def family(program):
 def frames_for(notes, division, drum_mode, tempo=500000):
     if notes is None: return b"",tempo
     end=max(n.end for n in notes)
-    step=max(1,round(division*tempo/1000000/50))
+    # MIDI ticks per second = division * 1_000_000 / tempo (microseconds per
+    # quarter note); dividing by 50 gives ticks per AY frame. tempo belongs
+    # in the denominator - it was multiplied in instead, which shrank the
+    # step as tempo got faster and generated far too many 50 Hz frames per
+    # bar, stretching every note out over many more real frames than it
+    # should play for.
+    step=max(1,round(division*1000000/(tempo*50)))
     total=max(1,math.ceil((end+step)/step))
     out=bytearray()
     for frame in range(total):
@@ -125,12 +131,6 @@ def frames_for(notes, division, drum_mode, tempo=500000):
 def compile_ay(input_path, output_path, drum_mode="off"):
     division,notes,tempos=read_midi(input_path)
     tempo=tempos[0][1] if tempos else 500000
-    # frames_for uses the first tempo for its frame grid; keep output deterministic.
-    old=500000
-    frames=bytearray()
-    end=max(n.end for n in notes); step=max(1,round(division*tempo/1000000/50))
-    total=max(1,math.ceil((end+step)/step))
-    # Reuse the renderer at its stable 120 BPM default where tempo variation is not yet supported.
     frames,_=frames_for(notes,division,drum_mode,tempo)
     Path(output_path).write_bytes(frames)
     print(f"wrote {output_path} ({len(frames)} bytes, {len(frames)//14} AY frames, drums={drum_mode})")
